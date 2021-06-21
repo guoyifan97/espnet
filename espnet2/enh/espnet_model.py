@@ -195,7 +195,7 @@ class ESPnetEnhancementModel(AbsESPnetModel):
         speech_ref = speech_ref[:, :, : speech_lengths.max()]
         speech_mix = speech_mix[:, : speech_lengths.max()]
 
-        loss, speech_pre, speech_ref, mask_pre, out_lengths, perm = self._compute_loss(
+        loss, speech_pre, mask_pre, out_lengths, perm = self._compute_loss(
             speech_mix,
             speech_lengths,
             speech_ref,
@@ -208,11 +208,10 @@ class ESPnetEnhancementModel(AbsESPnetModel):
             if self.training:
                 si_snr = None
             else:
-                if isinstance(speech_pre[0], ComplexTensor):
-                    speech_pre = [
-                        self.enh_model.stft.inverse(ps, speech_lengths)[0]
-                        for ps in speech_pre
-                    ]
+                speech_pre = [
+                    self.enh_model.stft.inverse(ps, speech_lengths)[0]
+                    for ps in speech_pre
+                ]
                 speech_ref = torch.unbind(speech_ref, dim=1)
                 if speech_ref[0].dim() == 3:
                     # For si_snr loss, only select one channel as the reference
@@ -263,8 +262,6 @@ class ESPnetEnhancementModel(AbsESPnetModel):
             loss: (torch.Tensor) speech enhancement loss
             speech_pre: (List[torch.Tensor] or List[ComplexTensor])
                         enhanced speech or spectrum(s)
-            speech_ref: (List[torch.Tensor])
-                        processed reference speech
             mask_pre: (OrderedDict) estimated masks or None
             output_lengths: (Batch,)
             perm: () best permutation
@@ -302,7 +299,7 @@ class ESPnetEnhancementModel(AbsESPnetModel):
 
             if not cal_loss:
                 loss, perm = None, None
-                return loss, spectrum_pre, speech_ref, mask_pre, tf_length, perm
+                return loss, spectrum_pre, mask_pre, tf_length, perm
 
             # prepare reference speech and reference spectrum
             speech_ref = torch.unbind(speech_ref, dim=1)
@@ -455,7 +452,7 @@ class ESPnetEnhancementModel(AbsESPnetModel):
                 raise ValueError("Unsupported loss type: %s" % self.loss_type)
 
             loss = tf_loss
-            return loss, spectrum_pre, speech_ref, mask_pre, tf_length, perm
+            return loss, spectrum_pre, mask_pre, tf_length, perm
 
         else:
             speech_pre, speech_lengths, *__ = self.enh_model.forward_rawwav(
@@ -463,7 +460,7 @@ class ESPnetEnhancementModel(AbsESPnetModel):
             )
             if not cal_loss:
                 loss, perm = None, None
-                return loss, speech_pre, speech_ref, None, speech_lengths, perm
+                return loss, speech_pre, None, speech_lengths, perm
 
             if speech_ref.dim() == 4:
                 # For si_snr loss of multi-channel input,
@@ -483,7 +480,7 @@ class ESPnetEnhancementModel(AbsESPnetModel):
             )
             loss = si_snr_loss
 
-            return loss, speech_pre, speech_ref, None, speech_lengths, perm
+            return loss, speech_pre, None, speech_lengths, perm
 
     @staticmethod
     def tf_bce_loss(ref, inf, is_logits=True):
