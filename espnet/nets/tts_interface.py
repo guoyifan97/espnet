@@ -5,22 +5,18 @@
 
 """TTS Interface realted modules."""
 
+import chainer
+
 from espnet.asr.asr_utils import torch_load
 
 
-try:
-    import chainer
-except ImportError:
-    Reporter = None
-else:
+class Reporter(chainer.Chain):
+    """Reporter module."""
 
-    class Reporter(chainer.Chain):
-        """Reporter module."""
-
-        def report(self, dicts):
-            """Report values from a given dict."""
-            for d in dicts:
-                chainer.reporter.report(d, self)
+    def report(self, dicts):
+        """Report values from a given dict."""
+        for d in dicts:
+            chainer.reporter.report(d, self)
 
 
 class TTSInterface(object):

@@ -6,6 +6,7 @@
 
 """End-to-end speech translation model training script."""
 
+from distutils.version import LooseVersion
 import logging
 import os
 import random
@@ -14,10 +15,12 @@ import sys
 
 import configargparse
 import numpy as np
+import torch
 
-from espnet import __version__
 from espnet.utils.cli_utils import strtobool
 from espnet.utils.training.batchfy import BATCH_COUNT_CHOICES
+
+is_torch_1_2_plus = LooseVersion(torch.__version__) >= LooseVersion("1.2")
 
 
 # NOTE: you need this func to generate our sphinx doc
@@ -131,7 +134,7 @@ def get_parser(parser=None, required=True):
         "--ctc_type",
         default="warpctc",
         type=str,
-        choices=["builtin", "warpctc", "gtnctc", "cudnnctc"],
+        choices=["builtin", "warpctc"],
         help="Type of CTC implementation to calculate loss.",
     )
     parser.add_argument(
@@ -468,9 +471,6 @@ def main(cmd_args):
     if "pytorch_backend" in args.model_module:
         args.backend = "pytorch"
 
-    # add version info in args
-    args.version = __version__
-
     # logging info
     if args.verbose > 0:
         logging.basicConfig(
@@ -504,7 +504,7 @@ def main(cmd_args):
                 ngpu = len(p.stderr.decode().split("\n")) - 1
         args.ngpu = ngpu
     else:
-        if args.ngpu != 1:
+        if is_torch_1_2_plus and args.ngpu != 1:
             logging.debug(
                 "There are some bugs with multi-GPU processing in PyTorch 1.2+"
                 + " (see https://github.com/pytorch/pytorch/issues/21108)"

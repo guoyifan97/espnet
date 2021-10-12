@@ -20,14 +20,8 @@ def to_device(m, x):
         Tensor: Torch tensor located in the same place as torch module.
 
     """
-    if isinstance(m, torch.nn.Module):
-        device = next(m.parameters()).device
-    elif isinstance(m, torch.Tensor):
-        device = m.device
-    else:
-        raise TypeError(
-            "Expected torch.nn.Module or torch.tensor, " f"bot got: {type(m)}"
-        )
+    assert isinstance(m, torch.nn.Module)
+    device = next(m.parameters()).device
     return x.to(device)
 
 
@@ -59,6 +53,37 @@ def pad_list(xs, pad_value):
         pad[i, : xs[i].size(0)] = xs[i]
 
     return pad
+
+def pad_list_multichannel(xs, pad_value):
+    """Perform padding for the list of tensors. 
+    B CTF
+
+    Args:
+        xs (List): List of Tensors [(C, T_1, `*`), (C, T_2, `*`), ..., (C, T_B, `*`)].
+        pad_value (float): Value for padding.
+
+    Returns:
+        Tensor: Padded tensor (B, Tmax, `*`).
+
+    Examples:
+        >>> x = [torch.ones(4), torch.ones(2), torch.ones(1)]
+        >>> x
+        [tensor([1., 1., 1., 1.]), tensor([1., 1.]), tensor([1.])]
+        >>> pad_list(x, 0)
+        tensor([[1., 1., 1., 1.],
+                [1., 1., 0., 0.],
+                [1., 0., 0., 0.]])
+
+    """
+    n_batch = len(xs)
+    max_len = max(x.size(1) for x in xs)
+    pad = xs[0].new(n_batch, xs[0].size()[0], max_len, *xs[0].size()[2:]).fill_(pad_value)
+    for i in range(n_batch):
+        pad[i, :, : xs[i].size(1)] = xs[i]
+
+    return pad
+
+
 
 
 def make_pad_mask(lengths, xs=None, length_dim=-1):
@@ -362,7 +387,15 @@ def to_torch_tensor(x):
         if "real" not in x or "imag" not in x:
             raise ValueError("has 'real' and 'imag' keys: {}".format(list(x)))
         # Relative importing because of using python3 syntax
-        return ComplexTensor(x["real"], x["imag"])
+        if not isinstance(x["real"], list):
+            return ComplexTensor(x["real"], x["imag"])
+        else:
+            return [ComplexTensor(x["real"][i], x["imag"][i]) for i in range(len(x["real"]))]
+
+    elif isinstance(x, list):
+        if isinstance(x[0], torch.Tensor):
+            return x
+        return [torch.from_numpy(i) for i in x]
 
     # If torch.Tensor, as it is
     elif isinstance(x, torch.Tensor):
@@ -480,19 +513,3 @@ def rename_state_dict(
         v = state_dict.pop(k)
         new_k = k.replace(old_prefix, new_prefix)
         state_dict[new_k] = v
-
-
-def get_activation(act):
-    """Return activation function."""
-    # Lazy load to avoid unused import
-    from espnet.nets.pytorch_backend.conformer.swish import Swish
-
-    activation_funcs = {
-        "hardtanh": torch.nn.Hardtanh,
-        "tanh": torch.nn.Tanh,
-        "relu": torch.nn.ReLU,
-        "selu": torch.nn.SELU,
-        "swish": Swish,
-    }
-
-    return activation_funcs[act]()

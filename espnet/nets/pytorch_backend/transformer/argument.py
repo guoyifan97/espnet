@@ -121,18 +121,6 @@ def add_arguments_transformer_common(group):
         type=float,
         help="Dropout rate for the encoder",
     )
-    group.add_argument(
-        "--intermediate-ctc-weight",
-        default=0.0,
-        type=float,
-        help="Weight of intermediate CTC weight",
-    )
-    group.add_argument(
-        "--intermediate-ctc-layer",
-        default="",
-        type=str,
-        help="Position of intermediate CTC layer. {int} or {int},{int},...,{int}",
-    )
     # Encoder
     group.add_argument(
         "--elayers",
@@ -160,12 +148,6 @@ def add_arguments_transformer_common(group):
         default=4,
         type=int,
         help="Number of heads for multi head attention",
-    )
-    group.add_argument(
-        "--stochastic-depth-rate",
-        default=0.0,
-        type=float,
-        help="Skip probability of stochastic layer regularization",
     )
     # Decoder
     group.add_argument(

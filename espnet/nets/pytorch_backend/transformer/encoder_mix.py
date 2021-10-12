@@ -8,7 +8,7 @@
 
 import torch
 
-from espnet.nets.pytorch_backend.transducer.vgg2l import VGG2L
+from espnet.nets.pytorch_backend.transducer.vgg import VGG2L
 from espnet.nets.pytorch_backend.transformer.attention import MultiHeadedAttention
 from espnet.nets.pytorch_backend.transformer.embedding import PositionalEncoding
 from espnet.nets.pytorch_backend.transformer.encoder import Encoder
@@ -21,7 +21,7 @@ class EncoderMix(Encoder, torch.nn.Module):
     """Transformer encoder module.
 
     :param int idim: input dim
-    :param int attention_dim: dimension of attention
+    :param int attention_dim: dimention of attention
     :param int attention_heads: the number of heads of multi head attention
     :param int linear_units: the number of units of position-wise feed forward
     :param int num_blocks: the number of decoder blocks

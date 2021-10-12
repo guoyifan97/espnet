@@ -369,8 +369,8 @@ class DNN_Beamformer(torch.nn.Module):
             enhanced, ws = apply_beamforming(data, ilens, psd_speech, psd_noise)
 
             # (..., F, T) -> (..., T, F)
-            enhanced = enhanced.transpose(-1, -2)
-            mask_speech = mask_speech.transpose(-1, -3)
+            enhanced = enhanced.transpose(-1, -2).contiguous()
+            mask_speech = mask_speech.transpose(-1, -3).contiguous()
         else:  # multi-speaker case: (mask_speech1, ..., mask_noise)
             mask_speech = list(masks[:-1])
             mask_noise = masks[-1]
@@ -391,8 +391,8 @@ class DNN_Beamformer(torch.nn.Module):
                 psd_speeches.insert(i, psd_speech)
 
                 # (..., F, T) -> (..., T, F)
-                enh = enh.transpose(-1, -2)
-                mask_speech[i] = mask_speech[i].transpose(-1, -3)
+                enh = enh.transpose(-1, -2).contiguous()
+                mask_speech[i] = mask_speech[i].transpose(-1, -3).contiguous()
 
                 enhanced.append(enh)
                 ws.append(w)
@@ -428,7 +428,7 @@ class AttentionReference(torch.nn.Module):
             torch.eye(C, dtype=datatype, device=psd_in.device).type(datatype2), 0
         )
         # psd: (B, F, C, C) -> (B, C, F)
-        psd = (psd.sum(dim=-1) / (C - 1)).transpose(-1, -2)
+        psd = (psd.sum(dim=-1) / (C - 1)).transpose(-1, -2).contiguous()
 
         # Calculate amplitude
         psd_feat = (psd.real ** 2 + psd.imag ** 2) ** 0.5

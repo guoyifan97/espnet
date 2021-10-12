@@ -65,9 +65,7 @@ class RNNP(torch.nn.Module):
         logging.debug(self.__class__.__name__ + " input lengths: " + str(ilens))
         elayer_states = []
         for layer in six.moves.range(self.elayers):
-            if not isinstance(ilens, torch.Tensor):
-                ilens = torch.tensor(ilens)
-            xs_pack = pack_padded_sequence(xs_pad, ilens.cpu(), batch_first=True, enforce_sorted=False)
+            xs_pack = pack_padded_sequence(xs_pad, ilens, batch_first=True)
             rnn = getattr(self, ("birnn" if self.bidir else "rnn") + str(layer))
             rnn.flatten_parameters()
             if prev_state is not None and rnn.bidirectional:
@@ -81,7 +79,7 @@ class RNNP(torch.nn.Module):
             sub = self.subsample[layer + 1]
             if sub > 1:
                 ys_pad = ys_pad[:, ::sub]
-                ilens = torch.tensor([int(i + 1) // sub for i in ilens])
+                ilens = [int(i + 1) // sub for i in ilens]
             # (sum _utt frame_utt) x dim
             projection_layer = getattr(self, "bt%d" % layer)
             projected = projection_layer(ys_pad.contiguous().view(-1, ys_pad.size(2)))
@@ -141,9 +139,7 @@ class RNN(torch.nn.Module):
         :rtype: torch.Tensor
         """
         logging.debug(self.__class__.__name__ + " input lengths: " + str(ilens))
-        if not isinstance(ilens, torch.Tensor):
-            ilens = torch.tensor(ilens)
-        xs_pack = pack_padded_sequence(xs_pad, ilens.cpu(), batch_first=True)
+        xs_pack = pack_padded_sequence(xs_pad, ilens, batch_first=True)
         self.nbrnn.flatten_parameters()
         if prev_state is not None and self.nbrnn.bidirectional:
             # We assume that when previous state is passed,
@@ -290,7 +286,6 @@ class Encoder(torch.nn.Module):
                     ]
                 )
                 logging.info("Use CNN-VGG + " + typ.upper() + " for encoder")
-            self.conv_subsampling_factor = 4
         else:
             if etype[-1] == "p":
                 self.enc = torch.nn.ModuleList(
@@ -302,7 +297,6 @@ class Encoder(torch.nn.Module):
                     [RNN(idim, elayers, eunits, eprojs, dropout, typ=typ)]
                 )
                 logging.info(typ.upper() + " without projection for encoder")
-            self.conv_subsampling_factor = 1
 
     def forward(self, xs_pad, ilens, prev_states=None):
         """Encoder forward
@@ -323,7 +317,7 @@ class Encoder(torch.nn.Module):
             current_states.append(states)
 
         # make mask to remove bias value in padded part
-        mask = to_device(xs_pad, make_pad_mask(ilens).unsqueeze(-1))
+        mask = to_device(self, make_pad_mask(ilens).unsqueeze(-1))
 
         return xs_pad.masked_fill(mask, 0.0), ilens, current_states
 

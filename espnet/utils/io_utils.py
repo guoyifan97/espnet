@@ -18,10 +18,15 @@ class LoadInputsAndTargets(object):
     ...           dict(input=[dict(feat='some.ark:123',
     ...                            filetype='mat',
     ...                            name='input1',
-    ...                            shape=[100, 80])],
+    ...                            shape=[100, 80]),
+                              dict(feat='some.ark:123',
+    ...                            filetype='mat',
+    ...                            name='input2',
+    ...                            shape=[100, 80])],GUO
     ...                output=[dict(tokenid='1 2 3 4',
     ...                             name='target1',
-    ...                             shape=[4, 31])]]))
+    ...                             shape=[4, 31])]
+                        ]))
     >>> l = LoadInputsAndTargets()
     >>> feat, target = l(batch)
 
@@ -90,12 +95,11 @@ class LoadInputsAndTargets(object):
 
         self.keep_all_data_on_mem = keep_all_data_on_mem
 
-    def __call__(self, batch, return_uttid=False):
+    def __call__(self, batch):
         """Function to load inputs and targets from list of dicts
 
         :param List[Tuple[str, dict]] batch: list of dict which is subset of
             loaded data.json
-        :param bool return_uttid: return utterance ID information for visualization
         :return: list of input token id sequences [(L_1), (L_2), ..., (L_B)]
         :return: list of input feature sequences
             [(T_1, D), (T_2, D), ..., (T_B, D)]
@@ -108,7 +112,8 @@ class LoadInputsAndTargets(object):
         y_feats_dict = OrderedDict()  # OrderedDict[str, List[np.ndarray]]
         uttid_list = []  # List[str]
 
-        for uttid, info in batch:
+        # batch : [('7601-291468-0006_0', {'category': 'multichannel', 'input': [{'feat': '/home/guoyifan/MultiChannel/egs/libri_multi_baseline/data/dev_other/data/raw_pcm_dev_other.22.flac.h5:7601-291468-0006_0', 'filetype': 'sound.hdf5', 'name': 'input1', 'shape': [3516, 4, 257]}], 'output': [{'name': 'target1', 'shape': [99, 5002], 'text': 'HIS ABODE WHICH HE HAD FIXED AT A BOWERY OR COUNTRY SEAT AT A SHORT DISTANCE FROM THE CITY JUST AT WHAT IS NOW CALLED DUTCH STREET SOON ABOUNDED WITH PROOFS OF HIS INGENUITY PATENT SMOKE JACKS THAT REQUIRED A HORSE TO WORK THEM DUTCH OVENS THAT ROASTED MEAT WITHOUT FIRE CARTS THAT WENT BEFORE THE HORSES WEATHERCOCKS THAT TURNED AGAINST THE WIND AND OTHER WRONG HEADED CONTRIVANCES THAT ASTONISHED AND CONFOUNDED ALL BEHOLDERS', 'token': '▁HIS ▁A BO DE ▁WHICH ▁HE ▁HAD ▁FIXED ▁AT ▁A ▁BOW ERY ▁OR ▁COUNTRY ▁SEAT ▁AT ▁A ▁SHORT ▁DISTANCE ▁FROM ▁THE ▁CITY ▁JUST ▁AT ▁WHAT ▁IS ▁NOW ▁CALLED ▁DUTCH ▁STREET ▁SOON ▁A BOUND ED ▁WITH ▁PROOF S ▁OF ▁HIS ▁IN GEN U ITY ▁PAT ENT ▁SMOKE ▁JACK S ▁THAT ▁REQUIRED ▁A ▁HORSE ▁TO ▁WORK ▁THEM ▁DUTCH ▁ OV ENS ▁THAT ▁ROAST ED ▁ME AT ▁WITHOUT ▁FIRE ▁CAR T S ▁THAT ▁WENT ▁BEFORE ▁THE ▁HORSES ▁WEATHER CO CK S ▁THAT ▁TURNED ▁AGAINST ▁THE ▁WIND ▁AND ▁OTHER ▁WRONG ▁HEAD ED ▁CONTRIV ANCE S ▁THAT ▁ASTONISHED ▁AND ▁CONFOUND ED ▁ALL ▁BEHOLD ERS', 'tokenid': '2406 452 62 99 4885 2361 2318 2040 725 452 925 125 3280 1360 4002 725 452 4094 1618 2141 4537 1151 2692 725 4877 2630 3211 1008 1700 4357 4228 452 65 110 4931 3618 363 3247 2406 2523 153 404 223 3362 121 4191 2644 363 4536 3828 452 2437 4606 4952 4540 1700 451 324 120 4536 3892 110 2964 39 4935 2029 1028 382 363 4536 4870 821 4537 2439 4860 87 84 363 4536 4688 550 4537 4917 603 3293 4979 2362 110 1317 26 363 4536 722 603 1267 110 573 832 123'}], 'utt2spk': '7601-291468'}),...]
+        for uttid, info in batch: 
             uttid_list.append(uttid)
 
             if self.load_input:
@@ -122,6 +127,9 @@ class LoadInputsAndTargets(object):
                         filepath=inp["feat"], filetype=inp.get("filetype", "mat")
                     )
                     x_feats_dict.setdefault(inp["name"], []).append(x)
+                    # x_feats_dict["input1"] = [(T1*4, 257), (T2*4, 257)] GUO
+                    # x_feats_dict.keys : ["input1", "input2", ...]
+
             # FIXME(kamo): Dirty way to load only speaker_embedding
             elif self.mode == "tts" and self.use_speaker_embedding:
                 for idx, inp in enumerate(info["input"]):
@@ -178,21 +186,28 @@ class LoadInputsAndTargets(object):
                 x_feats_dict, y_feats_dict, uttid_list
             )
         else:
-            raise NotImplementedError(self.mode)
+            raise NotImplementedError
 
         if self.preprocessing is not None:
             # Apply pre-processing all input features
+            # return_batch: {"input1": [ndarray, ndarray, ...],
+            #            "input2": [ndarray, ndarray, ...],
+            #            "target1": [ndarray, ndarray, ...],
+            #            "target2": [ndarray, ndarray, ...],}
             for x_name in return_batch.keys():
                 if x_name.startswith("input"):
                     return_batch[x_name] = self.preprocessing(
                         return_batch[x_name], uttid_list, **self.preprocess_args
                     )
-
-        if return_uttid:
-            return tuple(return_batch.values()), uttid_list
+                    # for idx, uttid in enumerate(uttid_list):
+                    #     if uttid.endswith("_rd_one"):
+                    #         # a = return_batch[x_name][idx].shape
+                    #         return_batch[x_name][idx] = return_batch[x_name][idx][:, 0:1]
+                    #         # raise ValueError(f"{a} {return_batch[x_name][idx].shape}")
+        
 
         # Doesn't return the names now.
-        return tuple(return_batch.values())
+        return tuple(return_batch.values()) # ([ndarray, ndarray, ...], [ndarray, ndarray, ...], ..., [text, text, ...])
 
     def _create_batch_asr(self, x_feats_dict, y_feats_dict, uttid_list):
         """Create a OrderedDict for the mini-batch
@@ -207,8 +222,13 @@ class LoadInputsAndTargets(object):
             Give uttid_list to sort in the same order as the mini-batch
         :return: batch, uttid_list
         :rtype: Tuple[OrderedDict, List[str]]
+               batch: {"input1": [ndarray, ndarray, ...],
+                       "input2": [ndarray, ndarray, ...],
+                       "target1": [ndarray, ndarray, ...],
+                       "target2": [ndarray, ndarray, ...],}并且去掉了输出为空的语音和标签。
         """
-        # handle single-input and multi-input (parallel) asr mode
+        # handle single-input and multi-input (paralell) asr mode
+        # xs = [[ndarray, ndarray, ...], [ndarray, ndarray, ...], ...] 对应多个input
         xs = list(x_feats_dict.values())
 
         if self.load_output:
@@ -237,6 +257,7 @@ class LoadInputsAndTargets(object):
             )
 
         # remove zero-length samples
+        # xs = [[ndarray, ndarray, ...], [ndarray, ndarray, ...], ...] 对应多个input
         xs = [[x[i] for i in nonzero_sorted_idx] for x in xs]
         uttid_list = [uttid_list[i] for i in nonzero_sorted_idx]
 
@@ -253,6 +274,7 @@ class LoadInputsAndTargets(object):
                 ]
             )
         else:
+            # GUO: return_batch = OrderedDict(list(zip(x_names, xs)))
             return_batch = OrderedDict([(x_name, x) for x_name, x in zip(x_names, xs)])
         return return_batch, uttid_list
 

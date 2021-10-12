@@ -14,8 +14,8 @@ from torch_complex.tensor import ComplexTensor
 class Frontend(nn.Module):
     def __init__(
         self,
+        args,
         idim: int,
-        args = dict(),
         # WPE options
         use_wpe: bool = False,
         wtype: str = "blstmp",
@@ -50,12 +50,13 @@ class Frontend(nn.Module):
         cb_down_sample_layer: List[Tuple[str]] = [(16, 7, 2), (64, 5, 2)],
     ):
         super().__init__()
-        print(args)
-        raise
+
         self.use_beamformer = use_beamformer
         self.use_beamformer_guo = use_beamformer_guo
         self.use_complex_beamformer = use_complex_beamformer
         self.use_universal_beamformer = getattr(args, "use_universal_beamformer", False)
+        print(args)
+        raise
         self.random_pick_channel = getattr(args, "random_pick_channel", 0)
         if self.random_pick_channel != 0:
             print(f"We shall pick {self.random_pick_channel} channel to train nn")
@@ -220,6 +221,122 @@ class Frontend(nn.Module):
                         pos_embed_type=getattr(args, "uf_pos_embed_type", "2D"),
                         beamformer_type=getattr(args, "uf_beamformer_type", "shengdai"),
                         beamformer_return_mask=getattr(args, "uf_beamformer_return_mask", False),
+                    )
+                elif getattr(args, "use_cnn_front_attention_mean", False):
+                    from espnet.nets.pytorch_backend.frontends.cnn_front_attention_mean import CNN_Front_Attention_Mean
+                    self.beamformer = CNN_Front_Attention_Mean(
+                        conv_layer_list=cb_conv_layer_list,
+                        inplane=cb_inplane,
+                        use_dilation=args.cb_dilation_replace_stride,
+                        n_att_head=args.uf_n_att_head,
+                        n_att_blocks=args.uf_n_att_blocks,
+                        n_channel_att_blocks=args.uf_n_channel_att_blocks,
+                        n_time_att_blocks=args.uf_n_time_att_blocks,
+                        fft_feat=args.uf_n_fft_feat,
+                        att_feat=args.uf_n_att_feat,
+                        dropout_rate=args.dropout_rate,
+                        reduce_method=getattr(args, "uf_reduce_method", "mask"),
+                        use_residual=getattr(args, "uf_use_residual", True),
+                        use_sub_sampling=getattr(args, "uf_use_subsampling", False),
+                        downconv_type=getattr(args, "uf_downconv_type", "conv1d"),
+                        use_time_high_dim_as_v=getattr(args, "uf_use_time_high_dim_as_v", False),
+                        use_pos_embed=getattr(args, "uf_use_pos_embed", True),
+                        pos_embed_type=getattr(args, "uf_pos_embed_type", "2D"),
+                        beamformer_type=getattr(args, "uf_beamformer_type", "shengdai"),
+                        beamformer_return_mask=getattr(args, "uf_beamformer_return_mask", False),
+                        use_abs_pos_pred=getattr(args, "uf_use_abs_pos_pred", True),
+                        num_abs_pos_extracted=getattr(args, "uf_num_abs_pos_extracted", 1),
+                        attention_method=getattr(args, "uf_attention_method", "channel_wise_att"),
+                        power_att_window_len=getattr(args, "uf_power_att_window_len", 2),
+                        power_att_affine=getattr(args, "uf_power_att_affine", False),
+                        power_att_softmax_factor=getattr(args, "uf_power_att_softmax_factor", 1.0),
+                        power_att_auto_grad_softmax_factor=getattr(args, "uf_power_att_auto_grad_softmax_factor", False),
+                        power_att_use_delta_power_att=getattr(args, "uf_power_att_use_delta_power_att", False), 
+                        power_att_auto_grad_delta_factor=getattr(args, "uf_power_att_auto_grad_delta_factor", True),
+                        power_att_delta_factor=getattr(args, "uf_power_att_delta_factor", 3.0),
+                        power_att_delta_pos=getattr(args, "uf_power_att_delta_pos", 4),
+                        abs_pos_loss_factor=getattr(args, "uf_abs_pos_loss_factor", 50.),
+                        use_pos_embed_in_beamform_layer=getattr(args, "uf_use_pos_embed_in_beamform_layer", False),
+                        conv_layer_dilation=eval(getattr(args, "cb_conv_layer_dilation", "[1]*8")),
+                    )
+                elif getattr(args, "use_cnn_front_attention_mean_no_padding", False):
+                    from espnet.nets.pytorch_backend.frontends.cnn_front_attention_mean_no_padding import CNN_Front_Attention_Mean
+                    self.beamformer = CNN_Front_Attention_Mean(
+                        conv_layer_list=cb_conv_layer_list,
+                        inplane=cb_inplane,
+                        use_dilation=args.cb_dilation_replace_stride,
+                        n_att_head=args.uf_n_att_head,
+                        n_att_blocks=args.uf_n_att_blocks,
+                        n_channel_att_blocks=args.uf_n_channel_att_blocks,
+                        n_time_att_blocks=args.uf_n_time_att_blocks,
+                        fft_feat=args.uf_n_fft_feat,
+                        att_feat=args.uf_n_att_feat,
+                        dropout_rate=args.dropout_rate,
+                        reduce_method=getattr(args, "uf_reduce_method", "mask"),
+                        use_residual=getattr(args, "uf_use_residual", True),
+                        use_sub_sampling=getattr(args, "uf_use_subsampling", False),
+                        downconv_type=getattr(args, "uf_downconv_type", "conv1d"),
+                        use_time_high_dim_as_v=getattr(args, "uf_use_time_high_dim_as_v", False),
+                        use_pos_embed=getattr(args, "uf_use_pos_embed", True),
+                        pos_embed_type=getattr(args, "uf_pos_embed_type", "2D"),
+                        beamformer_type=getattr(args, "uf_beamformer_type", "shengdai"),
+                        beamformer_return_mask=getattr(args, "uf_beamformer_return_mask", False),
+                        use_abs_pos_pred=getattr(args, "uf_use_abs_pos_pred", True),
+                        num_abs_pos_extracted=getattr(args, "uf_num_abs_pos_extracted", 1),
+                        attention_method=getattr(args, "uf_attention_method", "channel_wise_att"),
+                        power_att_window_len=getattr(args, "uf_power_att_window_len", 2),
+                        power_att_affine=getattr(args, "uf_power_att_affine", False),
+                        power_att_softmax_factor=getattr(args, "uf_power_att_softmax_factor", 1.0),
+                        power_att_auto_grad_softmax_factor=getattr(args, "uf_power_att_auto_grad_softmax_factor", False),
+                        power_att_use_delta_power_att=getattr(args, "uf_power_att_use_delta_power_att", False), 
+                        power_att_auto_grad_delta_factor=getattr(args, "uf_power_att_auto_grad_delta_factor", True),
+                        power_att_delta_factor=getattr(args, "uf_power_att_delta_factor", 3.0),
+                        power_att_delta_pos=getattr(args, "uf_power_att_delta_pos", 4),
+                        abs_pos_loss_factor=getattr(args, "uf_abs_pos_loss_factor", 50.),
+                        use_pos_embed_in_beamform_layer=getattr(args, "uf_use_pos_embed_in_beamform_layer", False),
+                        conv_layer_dilation=eval(getattr(args, "cb_conv_layer_dilation", "[1]*8")),
+                        no_residual=getattr(args, "cb_conv_layer_no_residual_connect", False),
+                        no_residual_no_padding=getattr(args, "cb_conv_layer_no_residual_no_padding", False),
+                    )
+                elif getattr(args, "use_cnn_front_attention_mean_dilation_res", False):
+                    from espnet.nets.pytorch_backend.frontends.cnn_front_attention_mean_dilation_res import CNN_Front_Attention_Mean
+                    self.beamformer = CNN_Front_Attention_Mean(
+                        conv_layer_list=cb_conv_layer_list,
+                        inplane=cb_inplane,
+                        use_dilation=args.cb_dilation_replace_stride,
+                        n_att_head=args.uf_n_att_head,
+                        n_att_blocks=args.uf_n_att_blocks,
+                        n_channel_att_blocks=args.uf_n_channel_att_blocks,
+                        n_time_att_blocks=args.uf_n_time_att_blocks,
+                        fft_feat=args.uf_n_fft_feat,
+                        att_feat=args.uf_n_att_feat,
+                        dropout_rate=args.dropout_rate,
+                        reduce_method=getattr(args, "uf_reduce_method", "mask"),
+                        use_residual=getattr(args, "uf_use_residual", True),
+                        use_sub_sampling=getattr(args, "uf_use_subsampling", False),
+                        downconv_type=getattr(args, "uf_downconv_type", "conv1d"),
+                        use_time_high_dim_as_v=getattr(args, "uf_use_time_high_dim_as_v", False),
+                        use_pos_embed=getattr(args, "uf_use_pos_embed", True),
+                        pos_embed_type=getattr(args, "uf_pos_embed_type", "2D"),
+                        beamformer_type=getattr(args, "uf_beamformer_type", "shengdai"),
+                        beamformer_return_mask=getattr(args, "uf_beamformer_return_mask", False),
+                        use_abs_pos_pred=getattr(args, "uf_use_abs_pos_pred", True),
+                        num_abs_pos_extracted=getattr(args, "uf_num_abs_pos_extracted", 1),
+                        attention_method=getattr(args, "uf_attention_method", "channel_wise_att"),
+                        power_att_window_len=getattr(args, "uf_power_att_window_len", 2),
+                        power_att_affine=getattr(args, "uf_power_att_affine", False),
+                        power_att_softmax_factor=getattr(args, "uf_power_att_softmax_factor", 1.0),
+                        power_att_auto_grad_softmax_factor=getattr(args, "uf_power_att_auto_grad_softmax_factor", False),
+                        power_att_use_delta_power_att=getattr(args, "uf_power_att_use_delta_power_att", False), 
+                        power_att_auto_grad_delta_factor=getattr(args, "uf_power_att_auto_grad_delta_factor", True),
+                        power_att_delta_factor=getattr(args, "uf_power_att_delta_factor", 3.0),
+                        power_att_delta_pos=getattr(args, "uf_power_att_delta_pos", 4),
+                        abs_pos_loss_factor=getattr(args, "uf_abs_pos_loss_factor", 50.),
+                        use_pos_embed_in_beamform_layer=getattr(args, "uf_use_pos_embed_in_beamform_layer", False),
+                        conv_layer_dilation=eval(getattr(args, "cb_conv_layer_dilation", "[1]*8")),
+                        no_residual=getattr(args, "cb_conv_layer_no_residual_connect", False),
+                        add_orig_spectrum_to_mid=getattr(args, "cb_add_orig_spectrum_to_mid", -1),
+                        use_freq_embedding=getattr(args, "cb_use_freq_embedding", False),
                     )
                 else:
                     from espnet.nets.pytorch_backend.frontends.universal_frontend import Universal_Frontend

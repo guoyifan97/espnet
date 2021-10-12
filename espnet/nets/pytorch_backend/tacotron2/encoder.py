@@ -24,9 +24,11 @@ class Encoder(torch.nn.Module):
     """Encoder module of Spectrogram prediction network.
 
     This is a module of encoder of Spectrogram prediction network in Tacotron2,
-    which described in `Natural TTS Synthesis by Conditioning WaveNet on Mel
-    Spectrogram Predictions`_. This is the encoder which converts either a sequence
-    of characters or acoustic features into the sequence of hidden states.
+    which described in `Natural TTS
+    Synthesis by Conditioning WaveNet on Mel Spectrogram Predictions`_.
+    This is the encoder which converts either a
+    sequence of characters or acoustic features
+    into the sequence of hidden states.
 
     .. _`Natural TTS Synthesis by Conditioning WaveNet on Mel Spectrogram Predictions`:
        https://arxiv.org/abs/1712.05884
@@ -52,7 +54,7 @@ class Encoder(torch.nn.Module):
 
         Args:
             idim (int) Dimension of the inputs.
-            input_layer (str): Input layer type.
+            :param str input_layer: input layer type
             embed_dim (int, optional) Dimension of character embedding.
             elayers (int, optional) The number of encoder blstm layers.
             eunits (int, optional) The number of encoder blstm units.
@@ -131,9 +133,10 @@ class Encoder(torch.nn.Module):
         """Calculate forward propagation.
 
         Args:
-            xs (Tensor): Batch of the padded sequence. Either character ids (B, Tmax)
-                or acoustic feature (B, Tmax, idim * encoder_reduction_factor). Padded
-                value should be 0.
+            xs (Tensor): Batch of the padded sequence.
+                Either character ids (B, Tmax)
+                    or acoustic feature (B, Tmax, idim * encoder_reduction_factor).
+                Padded value should be 0.
             ilens (LongTensor): Batch of lengths of each input batch (B,).
 
         Returns:
@@ -150,9 +153,7 @@ class Encoder(torch.nn.Module):
                     xs = self.convs[i](xs)
         if self.blstm is None:
             return xs.transpose(1, 2)
-        if not isinstance(ilens, torch.Tensor):
-            ilens = torch.tensor(ilens)
-        xs = pack_padded_sequence(xs.transpose(1, 2), ilens.cpu(), batch_first=True)
+        xs = pack_padded_sequence(xs.transpose(1, 2), ilens, batch_first=True)
         self.blstm.flatten_parameters()
         xs, _ = self.blstm(xs)  # (B, Tmax, C)
         xs, hlens = pad_packed_sequence(xs, batch_first=True)
@@ -171,6 +172,6 @@ class Encoder(torch.nn.Module):
 
         """
         xs = x.unsqueeze(0)
-        ilens = torch.tensor([x.size(0)])
+        ilens = [x.size(0)]
 
         return self.forward(xs, ilens)[0][0]

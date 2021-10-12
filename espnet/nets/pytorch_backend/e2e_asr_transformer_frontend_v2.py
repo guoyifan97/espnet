@@ -5,6 +5,8 @@
 
 from argparse import Namespace
 from distutils.util import strtobool
+# from espnet.transform.spec_augment import spec_augment
+from espnet2.asr.specaug.specaug import SpecAug
 from itertools import groupby
 import logging
 import math
@@ -111,7 +113,7 @@ class FrontendLo(torch.nn.Module):
 
     def forward(self, x, ilen):
         if self.downsample:
-            x = self.pool(x.transpose(1,2)).transpose(1,2)
+            x = self.pool(x.transpose(1,2).contiguous()).transpose(1,2).contiguous()
             ilen = ilen//4
         x = self.linear(x)
         x = self.norm(x.unsqueeze(1)).squeeze(1)
@@ -150,7 +152,7 @@ class E2E(ASRInterface, torch.nn.Module):
             "--transformer-input-layer",
             type=str,
             default="conv2d",
-            choices=["conv2d", "linear", "embed"],
+            choices=["conv2d", "linear", "embed", "vgg2l"],
             help="transformer input layer type",
         )
         group.add_argument(
@@ -317,7 +319,7 @@ class E2E(ASRInterface, torch.nn.Module):
             
             if getattr(args, "not_use_mel_transform", True) and (self.use_complex_beamformer or self.use_universal_beamformer): #use-complex-beamformernew
             # if self.use_complex_beamformer:
-                self.feature_transform = feature_transform_for_complex(args, (idim-1) * 2, getattr(args, "feature_reduce", False))
+                self.feature_transform = feature_transform_for_complex(args, getattr(args, "no_padding_idim", (idim-1) * 2), getattr(args, "feature_reduce", False))
                 
                 if args.cb_down_sample:
                     self.cb_down_sample = args.cb_down_sample
@@ -343,7 +345,9 @@ class E2E(ASRInterface, torch.nn.Module):
         else:
             self.frontend = None
         
-        
+        if getattr(args, "cb_use_specaug_after_frontend", False):
+            self.use_specaug = True
+            self.specaug_module = SpecAug()
 
 
         if getattr(args, "cb_use_frontend_ctc", False):
@@ -466,14 +470,16 @@ class E2E(ASRInterface, torch.nn.Module):
         if getattr(self, "frontend_ctc", False):
             ys_pad_phone = ys_pad[1]
             ys_pad = ys_pad[0]
-
-        
         
         if self.frontend is not None:
-            if not self.use_complex_beamformer:
+            if not self.use_complex_beamformer and not self.use_universal_beamformer:
                 xs_pad = to_torch_tensor(xs_pad)
                 hs_pad, hlens, mask = self.frontend(xs_pad[0] if isinstance(xs_pad, list) else xs_pad, ilens)
                 frontend_loss, loss_reverb, loss_clean = None, None, None
+            elif self.use_universal_beamformer:
+                xs_pad = to_torch_tensor(xs_pad)
+                hs_pad, hlens, frontend_loss = self.frontend(xs_pad[0] if isinstance(xs_pad, list) else xs_pad, ilens)
+                loss_reverb, loss_clean = None, None
             else:
                 xs_pad = to_torch_tensor(xs_pad)
                 hs_pad, hlens, frontend_loss, loss_reverb, loss_clean = self.frontend(xs_pad, ilens)
@@ -486,6 +492,9 @@ class E2E(ASRInterface, torch.nn.Module):
             del xs_pad, ilens
 
             hs_pad, hlens = self.feature_transform(hs_pad, hlens)
+
+            if getattr(self, "use_specaug", False) and self.training:
+                hs_pad = self.specaug_module(hs_pad)[0]
             
         else:
             hs_pad, hlens = xs_pad, ilens
@@ -624,7 +633,6 @@ class E2E(ASRInterface, torch.nn.Module):
         if self.use_complex_beamformer or self.use_universal_beamformer:
             if isinstance(frontend_loss, torch.Tensor):
                 self.loss = (1-self.complex_loss_ratio)*self.loss + self.complex_loss_ratio*frontend_loss
-                # raise
             elif isinstance(loss_clean, torch.Tensor):
                 self.loss = self.loss + self.complex_loss_ratio * loss_clean
 
@@ -652,7 +660,7 @@ class E2E(ASRInterface, torch.nn.Module):
             # 1 TxC F -> 1 T C F -> 1 C T F
             ilens = [x.shape[1]]
             if len(x.shape) == 4:
-                x = x.transpose(1,2)
+                x = x.transpose(1,2).contiguous()
 
         # GUO added
         if self.frontend is not None:

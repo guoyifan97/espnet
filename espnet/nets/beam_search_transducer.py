@@ -1,24 +1,34 @@
 """Search algorithms for transducer models."""
 
-import logging
+from dataclasses import dataclass
+from typing import Any
+from typing import Dict
 from typing import List
 from typing import Union
 
 import numpy as np
 import torch
+from typeguard import check_argument_types
 
-from espnet.nets.pytorch_backend.transducer.custom_decoder import CustomDecoder
-from espnet.nets.pytorch_backend.transducer.joint_network import JointNetwork
-from espnet.nets.pytorch_backend.transducer.rnn_decoder import RNNDecoder
-from espnet.nets.pytorch_backend.transducer.utils import create_lm_batch_states
+from espnet.nets.pytorch_backend.transducer.utils import create_lm_batch_state
 from espnet.nets.pytorch_backend.transducer.utils import init_lm_state
 from espnet.nets.pytorch_backend.transducer.utils import is_prefix
 from espnet.nets.pytorch_backend.transducer.utils import recombine_hyps
-from espnet.nets.pytorch_backend.transducer.utils import select_k_expansions
 from espnet.nets.pytorch_backend.transducer.utils import select_lm_state
-from espnet.nets.pytorch_backend.transducer.utils import subtract
-from espnet.nets.transducer_decoder_interface import ExtendedHypothesis
-from espnet.nets.transducer_decoder_interface import Hypothesis
+from espnet.nets.pytorch_backend.transducer.utils import substract
+from espnet2.asr.decoder.abs_decoder import AbsDecoder
+
+
+@dataclass
+class Hypothesis:
+    """Hypothesis class for beam search algorithms."""
+
+    score: float
+    yseq: List[int]
+    dec_state: Union[List[List[torch.Tensor]], List[torch.Tensor]]
+    y: List[torch.tensor] = None
+    lm_state: Union[Dict[str, Any], List[Any]] = None
+    lm_scores: torch.Tensor = None
 
 
 class BeamSearchTransducer:
@@ -26,8 +36,7 @@ class BeamSearchTransducer:
 
     def __init__(
         self,
-        decoder: Union[RNNDecoder, CustomDecoder],
-        joint_network: JointNetwork,
+        decoder: Union[AbsDecoder, torch.nn.Module],
         beam_size: int,
         lm: torch.nn.Module = None,
         lm_weight: float = 0.1,
@@ -36,224 +45,144 @@ class BeamSearchTransducer:
         u_max: int = 50,
         nstep: int = 1,
         prefix_alpha: int = 1,
-        expansion_gamma: int = 2.3,
-        expansion_beta: int = 2,
         score_norm: bool = True,
-        softmax_temperature: float = 1.0,
-        nbest: int = 1,
     ):
         """Initialize transducer beam search.
 
         Args:
-            decoder: Decoder module.
-            joint_network: Joint network module.
-            beam_size: Beam size.
-            lm: LM class.
-            lm_weight: LM weight for soft fusion.
-            search_type: Search algorithm to use during inference.
-            max_sym_exp: Number of maximum symbol expansions at each time step. (TSD)
-            u_max: Maximum output sequence length. (ALSD)
-            nstep: Number of maximum expansion steps at each time step. (NSC/mAES)
-            prefix_alpha: Maximum prefix length in prefix search. (NSC/mAES)
-            expansion_beta:
-              Number of additional candidates for expanded hypotheses selection. (mAES)
-            expansion_gamma: Allowed logp difference for prune-by-value method. (mAES)
-            score_norm: Normalize final scores by length. ("default")
-            softmax_temperature: Penalization term for softmax function.
-            nbest: Number of final hypothesis.
-
+            decoder: Decoder class to use
+            beam_size: Number of hypotheses kept during search
+            lm: LM class to use
+            lm_weight: lm weight for soft fusion
+            search_type: type of algorithm to use for search
+            max_sym_exp: number of maximum symbol expansions at each time step ("tsd")
+            u_max: maximum output sequence length ("alsd")
+            nstep: number of maximum expansion steps at each time step ("nsc")
+            prefix_alpha: maximum prefix length in prefix search ("nsc")
+            score_norm: normalize final scores by length ("default")
         """
-        self.decoder = decoder
-        self.joint_network = joint_network
+        assert check_argument_types()
 
+        self.decoder = decoder
         self.beam_size = beam_size
+
         self.hidden_size = decoder.dunits
         self.vocab_size = decoder.odim
-
-        self.blank_id = decoder.blank_id
+        self.blank = decoder.blank
 
         if self.beam_size <= 1:
             self.search_algorithm = self.greedy_search
         elif search_type == "default":
             self.search_algorithm = self.default_beam_search
         elif search_type == "tsd":
-            self.max_sym_exp = max_sym_exp
-
             self.search_algorithm = self.time_sync_decoding
         elif search_type == "alsd":
-            self.u_max = u_max
-
             self.search_algorithm = self.align_length_sync_decoding
         elif search_type == "nsc":
-            self.nstep = nstep
-            self.prefix_alpha = prefix_alpha
-
             self.search_algorithm = self.nsc_beam_search
-        elif search_type == "maes":
-            self.nstep = nstep if nstep > 1 else 2
-            self.prefix_alpha = prefix_alpha
-            self.expansion_gamma = expansion_gamma
-            self.expansion_beta = expansion_beta
-
-            self.search_algorithm = self.modified_adaptive_expansion_search
         else:
             raise NotImplementedError
 
-        if lm is not None:
-            self.use_lm = True
+        self.lm = lm
+        self.lm_weight = lm_weight
 
-            self.lm = lm
-            self.is_wordlm = True if hasattr(lm.predictor, "wordlm") else False
-
-            self.lm_predictor = lm.predictor.wordlm if self.is_wordlm else lm.predictor
-            self.lm_layers = len(self.lm_predictor.rnn)
-            self.lm_weight = lm_weight
-        else:
-            self.use_lm = False
-
-        if softmax_temperature > 1.0 and lm is not None:
-            logging.warning(
-                "Softmax temperature is not supported with LM decoding."
-                "Setting softmax-temperature value to 1.0."
-            )
-
-            self.softmax_temperature = 1.0
-        else:
-            self.softmax_temperature = softmax_temperature
-
+        self.max_sym_exp = max_sym_exp
+        self.u_max = u_max
+        self.nstep = nstep
+        self.prefix_alpha = prefix_alpha
         self.score_norm = score_norm
-        self.nbest = nbest
 
-    def __call__(
-        self, enc_out: torch.Tensor
-    ) -> Union[List[Hypothesis], List[ExtendedHypothesis]]:
+    def __call__(self, h: torch.Tensor) -> List[Hypothesis]:
         """Perform beam search.
 
         Args:
-            enc_out: Encoder output sequence. (T, D_enc)
+            h: Encoded speech features (T_max, D_enc)
 
         Returns:
             nbest_hyps: N-best decoding results
 
         """
-        self.decoder.set_device(enc_out.device)
+        if hasattr(self.decoder, "att_list"):
+            self.decoder.att_list[0].reset()
 
-        nbest_hyps = self.search_algorithm(enc_out)
+        if hasattr(self.decoder, "att"):
+            self.decoder.att[0].reset()
+
+        nbest_hyps = self.search_algorithm(h)
 
         return nbest_hyps
 
-    def sort_nbest(
-        self, hyps: Union[List[Hypothesis], List[ExtendedHypothesis]]
-    ) -> Union[List[Hypothesis], List[ExtendedHypothesis]]:
+    def sort_nbest(self, hyps: List[Hypothesis]) -> List[Hypothesis]:
         """Sort hypotheses by score or score given sequence length.
 
         Args:
-            hyps: Hypothesis.
+            hyps: list of hypotheses
 
         Return:
-            hyps: Sorted hypothesis.
+            hyps: sorted list of hypotheses
 
         """
         if self.score_norm:
-            hyps.sort(key=lambda x: x.score / len(x.yseq), reverse=True)
+            return sorted(hyps, key=lambda x: x.score / len(x.yseq), reverse=True)
         else:
-            hyps.sort(key=lambda x: x.score, reverse=True)
+            return sorted(hyps, key=lambda x: x.score, reverse=True)
 
-        return hyps[: self.nbest]
-
-    def prefix_search(
-        self, hyps: List[ExtendedHypothesis], enc_out_t: torch.Tensor
-    ) -> List[ExtendedHypothesis]:
-        """Prefix search for NSC and mAES strategies.
-
-        Based on https://arxiv.org/pdf/1211.3711.pdf
-
-        """
-        for j, hyp_j in enumerate(hyps[:-1]):
-            for hyp_i in hyps[(j + 1) :]:
-                curr_id = len(hyp_j.yseq)
-                pref_id = len(hyp_i.yseq)
-
-                if (
-                    is_prefix(hyp_j.yseq, hyp_i.yseq)
-                    and (curr_id - pref_id) <= self.prefix_alpha
-                ):
-                    logp = torch.log_softmax(
-                        self.joint_network(enc_out_t, hyp_i.dec_out[-1])
-                        / self.softmax_temperature,
-                        dim=-1,
-                    )
-
-                    curr_score = hyp_i.score + float(logp[hyp_j.yseq[pref_id]])
-
-                    for k in range(pref_id, (curr_id - 1)):
-                        logp = torch.log_softmax(
-                            self.joint_network(enc_out_t, hyp_j.dec_out[k])
-                            / self.softmax_temperature,
-                            dim=-1,
-                        )
-
-                        curr_score += float(logp[hyp_j.yseq[k + 1]])
-
-                    hyp_j.score = np.logaddexp(hyp_j.score, curr_score)
-
-        return hyps
-
-    def greedy_search(self, enc_out: torch.Tensor) -> List[Hypothesis]:
-        """Greedy search implementation.
+    def greedy_search(self, h: torch.Tensor) -> List[Hypothesis]:
+        """Greedy search implementation for transformer-transducer.
 
         Args:
-            enc_out: Encoder output sequence. (T, D_enc)
+            h: Encoded speech features (T_max, D_enc)
 
         Returns:
-            hyp: 1-best hypotheses.
+            hyp: 1-best decoding results
 
         """
-        dec_state = self.decoder.init_state(1)
+        init_tensor = h.unsqueeze(0)
+        dec_state = self.decoder.init_state(init_tensor)
 
-        hyp = Hypothesis(score=0.0, yseq=[self.blank_id], dec_state=dec_state)
+        hyp = Hypothesis(score=0.0, yseq=[self.blank], dec_state=dec_state)
+
         cache = {}
 
-        dec_out, state, _ = self.decoder.score(hyp, cache)
+        y, state, _ = self.decoder.score(hyp, cache, init_tensor)
 
-        for enc_out_t in enc_out:
-            logp = torch.log_softmax(
-                self.joint_network(enc_out_t, dec_out) / self.softmax_temperature,
-                dim=-1,
-            )
-            top_logp, pred = torch.max(logp, dim=-1)
+        for i, hi in enumerate(h):
+            ytu = torch.log_softmax(self.decoder.joint_network(hi, y[0]), dim=-1)
+            logp, pred = torch.max(ytu, dim=-1)
 
-            if pred != self.blank_id:
+            if pred != self.blank:
                 hyp.yseq.append(int(pred))
-                hyp.score += float(top_logp)
+                hyp.score += float(logp)
 
                 hyp.dec_state = state
 
-                dec_out, state, _ = self.decoder.score(hyp, cache)
+                y, state, _ = self.decoder.score(hyp, cache, init_tensor)
 
-        return [hyp]
+        return hyp
 
-    def default_beam_search(self, enc_out: torch.Tensor) -> List[Hypothesis]:
+    def default_beam_search(self, h: torch.Tensor) -> List[Hypothesis]:
         """Beam search implementation.
 
-        Modified from https://arxiv.org/pdf/1211.3711.pdf
-
         Args:
-            enc_out: Encoder output sequence. (T, D)
+            x: Encoded speech features (T_max, D_enc)
 
         Returns:
-            nbest_hyps: N-best hypothesis.
+            nbest_hyps: N-best decoding results
 
         """
         beam = min(self.beam_size, self.vocab_size)
         beam_k = min(beam, (self.vocab_size - 1))
 
-        dec_state = self.decoder.init_state(1)
+        init_tensor = h.unsqueeze(0)
+        blank_tensor = init_tensor.new_zeros(1, dtype=torch.long)
 
-        kept_hyps = [Hypothesis(score=0.0, yseq=[self.blank_id], dec_state=dec_state)]
+        dec_state = self.decoder.init_state(init_tensor)
+
+        kept_hyps = [Hypothesis(score=0.0, yseq=[self.blank], dec_state=dec_state)]
+
         cache = {}
 
-        for enc_out_t in enc_out:
+        for hi in h:
             hyps = kept_hyps
             kept_hyps = []
 
@@ -261,42 +190,40 @@ class BeamSearchTransducer:
                 max_hyp = max(hyps, key=lambda x: x.score)
                 hyps.remove(max_hyp)
 
-                dec_out, state, lm_tokens = self.decoder.score(max_hyp, cache)
+                y, state, lm_tokens = self.decoder.score(max_hyp, cache, init_tensor)
 
-                logp = torch.log_softmax(
-                    self.joint_network(enc_out_t, dec_out) / self.softmax_temperature,
-                    dim=-1,
+                ytu = torch.log_softmax(self.decoder.joint_network(hi, y[0]), dim=-1)
+
+                top_k = ytu[1:].topk(beam_k, dim=-1)
+
+                ytu = (
+                    torch.cat((top_k[0], ytu[0:1])),
+                    torch.cat((top_k[1] + 1, blank_tensor)),
                 )
-                top_k = logp[1:].topk(beam_k, dim=-1)
 
-                kept_hyps.append(
-                    Hypothesis(
-                        score=(max_hyp.score + float(logp[0:1])),
+                if self.lm:
+                    lm_state, lm_scores = self.lm.predict(max_hyp.lm_state, lm_tokens)
+
+                for logp, k in zip(*ytu):
+                    new_hyp = Hypothesis(
+                        score=(max_hyp.score + float(logp)),
                         yseq=max_hyp.yseq[:],
                         dec_state=max_hyp.dec_state,
                         lm_state=max_hyp.lm_state,
                     )
-                )
 
-                if self.use_lm:
-                    lm_state, lm_scores = self.lm.predict(max_hyp.lm_state, lm_tokens)
-                else:
-                    lm_state = max_hyp.lm_state
+                    if k == self.blank:
+                        kept_hyps.append(new_hyp)
+                    else:
+                        new_hyp.dec_state = state
 
-                for logp, k in zip(*top_k):
-                    score = max_hyp.score + float(logp)
+                        new_hyp.yseq.append(int(k))
 
-                    if self.use_lm:
-                        score += self.lm_weight * lm_scores[0][k + 1]
+                        if self.lm:
+                            new_hyp.lm_state = lm_state
+                            new_hyp.score += self.lm_weight * lm_scores[0][k]
 
-                    hyps.append(
-                        Hypothesis(
-                            score=score,
-                            yseq=max_hyp.yseq[:] + [int(k + 1)],
-                            dec_state=state,
-                            lm_state=lm_state,
-                        )
-                    )
+                        hyps.append(new_hyp)
 
                 hyps_max = float(max(hyps, key=lambda x: x.score).score)
                 kept_most_prob = sorted(
@@ -309,54 +236,60 @@ class BeamSearchTransducer:
 
         return self.sort_nbest(kept_hyps)
 
-    def time_sync_decoding(self, enc_out: torch.Tensor) -> List[Hypothesis]:
+    def time_sync_decoding(self, h: torch.Tensor) -> List[Hypothesis]:
         """Time synchronous beam search implementation.
 
         Based on https://ieeexplore.ieee.org/document/9053040
 
         Args:
-            enc_out: Encoder output sequence. (T, D)
+            h: Encoded speech features (T_max, D_enc)
 
         Returns:
-            nbest_hyps: N-best hypothesis.
+            nbest_hyps: N-best decoding results
 
         """
         beam = min(self.beam_size, self.vocab_size)
 
-        beam_state = self.decoder.init_state(beam)
+        init_tensor = h.unsqueeze(0)
+        beam_state = self.decoder.init_state(torch.zeros((beam, self.hidden_size)))
 
         B = [
             Hypothesis(
-                yseq=[self.blank_id],
+                yseq=[self.blank],
                 score=0.0,
                 dec_state=self.decoder.select_state(beam_state, 0),
             )
         ]
+
+        if self.lm:
+            if hasattr(self.lm.predictor, "wordlm"):
+                lm_model = self.lm.predictor.wordlm
+                lm_type = "wordlm"
+            else:
+                lm_model = self.lm.predictor
+                lm_type = "lm"
+
+                B[0].lm_state = init_lm_state(lm_model)
+
+            lm_layers = len(lm_model.rnn)
+
         cache = {}
 
-        if self.use_lm and not self.is_wordlm:
-            B[0].lm_state = init_lm_state(self.lm_predictor)
-
-        for enc_out_t in enc_out:
+        for hi in h:
             A = []
             C = B
 
-            enc_out_t = enc_out_t.unsqueeze(0)
+            h_enc = hi.unsqueeze(0)
 
             for v in range(self.max_sym_exp):
                 D = []
 
-                beam_dec_out, beam_state, beam_lm_tokens = self.decoder.batch_score(
-                    C,
-                    beam_state,
-                    cache,
-                    self.use_lm,
+                beam_y, beam_state, beam_lm_tokens = self.decoder.batch_score(
+                    C, beam_state, cache, init_tensor
                 )
 
                 beam_logp = torch.log_softmax(
-                    self.joint_network(enc_out_t, beam_dec_out)
-                    / self.softmax_temperature,
-                    dim=-1,
+                    self.decoder.joint_network(h_enc, beam_y), dim=-1
                 )
                 beam_topk = beam_logp[:, 1:].topk(beam, dim=-1)
 
@@ -379,10 +312,10 @@ class BeamSearchTransducer:
                             A[dict_pos].score, (hyp.score + float(beam_logp[i, 0]))
                         )
 
-                if v < (self.max_sym_exp - 1):
-                    if self.use_lm:
-                        beam_lm_states = create_lm_batch_states(
-                            [c.lm_state for c in C], self.lm_layers, self.is_wordlm
+                if v < self.max_sym_exp:
+                    if self.lm:
+                        beam_lm_states = create_lm_batch_state(
+                            [c.lm_state for c in C], lm_type, lm_layers
                         )
 
                         beam_lm_states, beam_lm_scores = self.lm.buff_predict(
@@ -398,11 +331,11 @@ class BeamSearchTransducer:
                                 lm_state=hyp.lm_state,
                             )
 
-                            if self.use_lm:
+                            if self.lm:
                                 new_hyp.score += self.lm_weight * beam_lm_scores[i, k]
 
                                 new_hyp.lm_state = select_lm_state(
-                                    beam_lm_states, i, self.lm_layers, self.is_wordlm
+                                    beam_lm_states, i, lm_type, lm_layers
                                 )
 
                             D.append(new_hyp)
@@ -413,73 +346,79 @@ class BeamSearchTransducer:
 
         return self.sort_nbest(B)
 
-    def align_length_sync_decoding(self, enc_out: torch.Tensor) -> List[Hypothesis]:
+    def align_length_sync_decoding(self, h: torch.Tensor) -> List[Hypothesis]:
         """Alignment-length synchronous beam search implementation.
 
         Based on https://ieeexplore.ieee.org/document/9053040
 
         Args:
-            h: Encoder output sequences. (T, D)
+            h: Encoded speech features (T_max, D_enc)
 
         Returns:
-            nbest_hyps: N-best hypothesis.
+            nbest_hyps: N-best decoding results
 
         """
         beam = min(self.beam_size, self.vocab_size)
 
-        t_max = int(enc_out.size(0))
-        u_max = min(self.u_max, (t_max - 1))
+        h_length = int(h.size(0))
+        u_max = min(self.u_max, (h_length - 1))
 
-        beam_state = self.decoder.init_state(beam)
+        init_tensor = h.unsqueeze(0)
+        beam_state = self.decoder.init_state(torch.zeros((beam, self.hidden_size)))
 
         B = [
             Hypothesis(
-                yseq=[self.blank_id],
+                yseq=[self.blank],
                 score=0.0,
                 dec_state=self.decoder.select_state(beam_state, 0),
             )
         ]
         final = []
+
+        if self.lm:
+            if hasattr(self.lm.predictor, "wordlm"):
+                lm_model = self.lm.predictor.wordlm
+                lm_type = "wordlm"
+            else:
+                lm_model = self.lm.predictor
+                lm_type = "lm"
+
+                B[0].lm_state = init_lm_state(lm_model)
+
+            lm_layers = len(lm_model.rnn)
+
         cache = {}
 
-        if self.use_lm and not self.is_wordlm:
-            B[0].lm_state = init_lm_state(self.lm_predictor)
-
-        for i in range(t_max + u_max):
+        for i in range(h_length + u_max):
             A = []
 
             B_ = []
-            B_enc_out = []
+            h_states = []
             for hyp in B:
                 u = len(hyp.yseq) - 1
                 t = i - u + 1
 
-                if t > (t_max - 1):
+                if t > (h_length - 1):
                     continue
 
                 B_.append(hyp)
-                B_enc_out.append((t, enc_out[t]))
+                h_states.append((t, h[t]))
 
             if B_:
-                beam_dec_out, beam_state, beam_lm_tokens = self.decoder.batch_score(
-                    B_,
-                    beam_state,
-                    cache,
-                    self.use_lm,
+                beam_y, beam_state, beam_lm_tokens = self.decoder.batch_score(
+                    B_, beam_state, cache, init_tensor
                 )
 
-                beam_enc_out = torch.stack([x[1] for x in B_enc_out])
+                h_enc = torch.stack([h[1] for h in h_states])
 
                 beam_logp = torch.log_softmax(
-                    self.joint_network(beam_enc_out, beam_dec_out)
-                    / self.softmax_temperature,
-                    dim=-1,
+                    self.decoder.joint_network(h_enc, beam_y), dim=-1
                 )
                 beam_topk = beam_logp[:, 1:].topk(beam, dim=-1)
 
-                if self.use_lm:
-                    beam_lm_states = create_lm_batch_states(
-                        [b.lm_state for b in B_], self.lm_layers, self.is_wordlm
+                if self.lm:
+                    beam_lm_states = create_lm_batch_state(
+                        [b.lm_state for b in B_], lm_type, lm_layers
                     )
 
                     beam_lm_states, beam_lm_scores = self.lm.buff_predict(
@@ -496,7 +435,7 @@ class BeamSearchTransducer:
 
                     A.append(new_hyp)
 
-                    if B_enc_out[i][0] == (t_max - 1):
+                    if h_states[i][0] == (h_length - 1):
                         final.append(new_hyp)
 
                     for logp, k in zip(beam_topk[0][i], beam_topk[1][i] + 1):
@@ -507,11 +446,11 @@ class BeamSearchTransducer:
                             lm_state=hyp.lm_state,
                         )
 
-                        if self.use_lm:
+                        if self.lm:
                             new_hyp.score += self.lm_weight * beam_lm_scores[i, k]
 
                             new_hyp.lm_state = select_lm_state(
-                                beam_lm_states, i, self.lm_layers, self.is_wordlm
+                                beam_lm_states, i, lm_type, lm_layers
                             )
 
                         A.append(new_hyp)
@@ -524,28 +463,34 @@ class BeamSearchTransducer:
         else:
             return B
 
-    def nsc_beam_search(self, enc_out: torch.Tensor) -> List[ExtendedHypothesis]:
+    def nsc_beam_search(self, h: torch.Tensor) -> List[Hypothesis]:
         """N-step constrained beam search implementation.
 
-        Based on/Modified from https://arxiv.org/pdf/2002.03577.pdf.
+        Based and modified from https://arxiv.org/pdf/2002.03577.pdf.
         Please reference ESPnet (b-flo, PR #2444) for any usage outside ESPnet
         until further modifications.
 
+        Note: the algorithm is not in his "complete" form but works almost as
+        intended.
+
         Args:
-            enc_out: Encoder output sequence. (T, D_enc)
+            h: Encoded speech features (T_max, D_enc)
 
         Returns:
-            nbest_hyps: N-best hypothesis.
+            nbest_hyps: N-best decoding results
 
         """
         beam = min(self.beam_size, self.vocab_size)
         beam_k = min(beam, (self.vocab_size - 1))
 
-        beam_state = self.decoder.init_state(beam)
+        init_tensor = h.unsqueeze(0)
+        blank_tensor = init_tensor.new_zeros(1, dtype=torch.long)
+
+        beam_state = self.decoder.init_state(torch.zeros((beam, self.hidden_size)))
 
         init_tokens = [
-            ExtendedHypothesis(
-                yseq=[self.blank_id],
+            Hypothesis(
+                yseq=[self.blank],
                 score=0.0,
                 dec_state=self.decoder.select_state(beam_state, 0),
             )
@@ -553,106 +498,129 @@ class BeamSearchTransducer:
 
         cache = {}
 
-        beam_dec_out, beam_state, beam_lm_tokens = self.decoder.batch_score(
-            init_tokens,
-            beam_state,
-            cache,
-            self.use_lm,
+        beam_y, beam_state, beam_lm_tokens = self.decoder.batch_score(
+            init_tokens, beam_state, cache, init_tensor
         )
 
         state = self.decoder.select_state(beam_state, 0)
 
-        if self.use_lm:
+        if self.lm:
             beam_lm_states, beam_lm_scores = self.lm.buff_predict(
                 None, beam_lm_tokens, 1
             )
-            lm_state = select_lm_state(
-                beam_lm_states, 0, self.lm_layers, self.is_wordlm
-            )
+
+            if hasattr(self.lm.predictor, "wordlm"):
+                lm_model = self.lm.predictor.wordlm
+                lm_type = "wordlm"
+            else:
+                lm_model = self.lm.predictor
+                lm_type = "lm"
+
+            lm_layers = len(lm_model.rnn)
+
+            lm_state = select_lm_state(beam_lm_states, 0, lm_type, lm_layers)
             lm_scores = beam_lm_scores[0]
         else:
             lm_state = None
             lm_scores = None
 
         kept_hyps = [
-            ExtendedHypothesis(
-                yseq=[self.blank_id],
+            Hypothesis(
+                yseq=[self.blank],
                 score=0.0,
                 dec_state=state,
-                dec_out=[beam_dec_out[0]],
+                y=[beam_y[0]],
                 lm_state=lm_state,
                 lm_scores=lm_scores,
             )
         ]
 
-        for enc_out_t in enc_out:
-            hyps = self.prefix_search(
-                sorted(kept_hyps, key=lambda x: len(x.yseq), reverse=True),
-                enc_out_t,
-            )
+        for hi in h:
+            hyps = sorted(kept_hyps, key=lambda x: len(x.yseq), reverse=True)
             kept_hyps = []
 
-            beam_enc_out = enc_out_t.unsqueeze(0)
+            h_enc = hi.unsqueeze(0)
+
+            for j in range(len(hyps) - 1):
+                for i in range((j + 1), len(hyps)):
+                    if (
+                        is_prefix(hyps[j].yseq, hyps[i].yseq)
+                        and (len(hyps[j].yseq) - len(hyps[i].yseq)) <= self.prefix_alpha
+                    ):
+                        next_id = len(hyps[i].yseq)
+
+                        ytu = torch.log_softmax(
+                            self.decoder.joint_network(hi, hyps[i].y[-1]), dim=0
+                        )
+
+                        curr_score = hyps[i].score + float(ytu[hyps[j].yseq[next_id]])
+
+                        for k in range(next_id, (len(hyps[j].yseq) - 1)):
+                            ytu = torch.log_softmax(
+                                self.decoder.joint_network(hi, hyps[j].y[k]), dim=0
+                            )
+
+                            curr_score += float(ytu[hyps[j].yseq[k + 1]])
+
+                        hyps[j].score = np.logaddexp(hyps[j].score, curr_score)
 
             S = []
             V = []
             for n in range(self.nstep):
-                beam_dec_out = torch.stack([hyp.dec_out[-1] for hyp in hyps])
+                beam_y = torch.stack([hyp.y[-1] for hyp in hyps])
 
                 beam_logp = torch.log_softmax(
-                    self.joint_network(beam_enc_out, beam_dec_out)
-                    / self.softmax_temperature,
-                    dim=-1,
+                    self.decoder.joint_network(h_enc, beam_y), dim=-1
                 )
                 beam_topk = beam_logp[:, 1:].topk(beam_k, dim=-1)
 
+                if self.lm:
+                    beam_lm_scores = torch.stack([hyp.lm_scores for hyp in hyps])
+
                 for i, hyp in enumerate(hyps):
-                    S.append(
-                        ExtendedHypothesis(
+                    i_topk = (
+                        torch.cat((beam_topk[0][i], beam_logp[i, 0:1])),
+                        torch.cat((beam_topk[1][i] + 1, blank_tensor)),
+                    )
+
+                    for logp, k in zip(*i_topk):
+                        new_hyp = Hypothesis(
                             yseq=hyp.yseq[:],
-                            score=hyp.score + float(beam_logp[i, 0:1]),
-                            dec_out=hyp.dec_out[:],
+                            score=(hyp.score + float(logp)),
+                            y=hyp.y[:],
                             dec_state=hyp.dec_state,
                             lm_state=hyp.lm_state,
                             lm_scores=hyp.lm_scores,
                         )
-                    )
 
-                    for logp, k in zip(beam_topk[0][i], beam_topk[1][i] + 1):
-                        score = hyp.score + float(logp)
+                        if k == self.blank:
+                            S.append(new_hyp)
+                        else:
+                            new_hyp.yseq.append(int(k))
 
-                        if self.use_lm:
-                            score += self.lm_weight * float(hyp.lm_scores[k])
+                            if self.lm:
+                                new_hyp.score += self.lm_weight * float(
+                                    beam_lm_scores[i, k]
+                                )
 
-                        V.append(
-                            ExtendedHypothesis(
-                                yseq=hyp.yseq[:] + [int(k)],
-                                score=score,
-                                dec_out=hyp.dec_out[:],
-                                dec_state=hyp.dec_state,
-                                lm_state=hyp.lm_state,
-                                lm_scores=hyp.lm_scores,
-                            )
-                        )
+                        V.append(new_hyp)
 
-                V.sort(key=lambda x: x.score, reverse=True)
-                V = subtract(V, hyps)[:beam]
+                V = sorted(V, key=lambda x: x.score, reverse=True)
+                V = substract(V, hyps)[:beam]
+
+                l_state = [v.dec_state for v in V]
+                l_tokens = [v.yseq for v in V]
 
                 beam_state = self.decoder.create_batch_states(
-                    beam_state,
-                    [v.dec_state for v in V],
-                    [v.yseq for v in V],
+                    beam_state, l_state, l_tokens
                 )
-                beam_dec_out, beam_state, beam_lm_tokens = self.decoder.batch_score(
-                    V,
-                    beam_state,
-                    cache,
-                    self.use_lm,
+                beam_y, beam_state, beam_lm_tokens = self.decoder.batch_score(
+                    V, beam_state, cache, init_tensor
                 )
 
-                if self.use_lm:
-                    beam_lm_states = create_lm_batch_states(
-                        [v.lm_state for v in V], self.lm_layers, self.is_wordlm
+                if self.lm:
+                    beam_lm_states = create_lm_batch_state(
+                        [v.lm_state for v in V], lm_type, lm_layers
                     )
                     beam_lm_states, beam_lm_scores = self.lm.buff_predict(
                         beam_lm_states, beam_lm_tokens, len(V)
@@ -660,210 +628,36 @@ class BeamSearchTransducer:
 
                 if n < (self.nstep - 1):
                     for i, v in enumerate(V):
-                        v.dec_out.append(beam_dec_out[i])
+                        v.y.append(beam_y[i])
 
                         v.dec_state = self.decoder.select_state(beam_state, i)
 
-                        if self.use_lm:
+                        if self.lm:
                             v.lm_state = select_lm_state(
-                                beam_lm_states, i, self.lm_layers, self.is_wordlm
+                                beam_lm_states, i, lm_type, lm_layers
                             )
                             v.lm_scores = beam_lm_scores[i]
 
                     hyps = V[:]
                 else:
                     beam_logp = torch.log_softmax(
-                        self.joint_network(beam_enc_out, beam_dec_out)
-                        / self.softmax_temperature,
-                        dim=-1,
+                        self.decoder.joint_network(h_enc, beam_y), dim=-1
                     )
 
                     for i, v in enumerate(V):
                         if self.nstep != 1:
                             v.score += float(beam_logp[i, 0])
 
-                        v.dec_out.append(beam_dec_out[i])
+                        v.y.append(beam_y[i])
 
                         v.dec_state = self.decoder.select_state(beam_state, i)
 
-                        if self.use_lm:
+                        if self.lm:
                             v.lm_state = select_lm_state(
-                                beam_lm_states, i, self.lm_layers, self.is_wordlm
+                                beam_lm_states, i, lm_type, lm_layers
                             )
                             v.lm_scores = beam_lm_scores[i]
 
             kept_hyps = sorted((S + V), key=lambda x: x.score, reverse=True)[:beam]
-
-        return self.sort_nbest(kept_hyps)
-
-    def modified_adaptive_expansion_search(
-        self, enc_out: torch.Tensor
-    ) -> List[ExtendedHypothesis]:
-        """It's the modified Adaptive Expansion Search (mAES) implementation.
-
-        Based on/modified from https://ieeexplore.ieee.org/document/9250505
-
-        Args:
-            enc_out: Encoder output sequence. (T, D_enc)
-
-        Returns:
-            nbest_hyps: N-best hypothesis.
-
-        """
-        beam = min(self.beam_size, self.vocab_size)
-        beam_state = self.decoder.init_state(beam)
-
-        init_tokens = [
-            ExtendedHypothesis(
-                yseq=[self.blank_id],
-                score=0.0,
-                dec_state=self.decoder.select_state(beam_state, 0),
-            )
-        ]
-
-        cache = {}
-
-        beam_dec_out, beam_state, beam_lm_tokens = self.decoder.batch_score(
-            init_tokens,
-            beam_state,
-            cache,
-            self.use_lm,
-        )
-
-        state = self.decoder.select_state(beam_state, 0)
-
-        if self.use_lm:
-            beam_lm_states, beam_lm_scores = self.lm.buff_predict(
-                None, beam_lm_tokens, 1
-            )
-            lm_state = select_lm_state(
-                beam_lm_states, 0, self.lm_layers, self.is_wordlm
-            )
-            lm_scores = beam_lm_scores[0]
-        else:
-            lm_state = None
-            lm_scores = None
-
-        kept_hyps = [
-            ExtendedHypothesis(
-                yseq=[self.blank_id],
-                score=0.0,
-                dec_state=state,
-                dec_out=[beam_dec_out[0]],
-                lm_state=lm_state,
-                lm_scores=lm_scores,
-            )
-        ]
-
-        for enc_out_t in enc_out:
-            hyps = self.prefix_search(
-                sorted(kept_hyps, key=lambda x: len(x.yseq), reverse=True),
-                enc_out_t,
-            )
-            kept_hyps = []
-
-            beam_enc_out = enc_out_t.unsqueeze(0)
-
-            list_b = []
-            for n in range(self.nstep):
-                beam_dec_out = torch.stack([h.dec_out[-1] for h in hyps])
-
-                beam_logp = torch.log_softmax(
-                    self.joint_network(beam_enc_out, beam_dec_out)
-                    / self.softmax_temperature,
-                    dim=-1,
-                )
-                k_expansions = select_k_expansions(
-                    hyps, beam_logp, beam, self.expansion_gamma, self.expansion_beta
-                )
-
-                list_exp = []
-                for i, hyp in enumerate(hyps):
-                    for k, new_score in k_expansions[i]:
-                        new_hyp = ExtendedHypothesis(
-                            yseq=hyp.yseq[:],
-                            score=new_score,
-                            dec_out=hyp.dec_out[:],
-                            dec_state=hyp.dec_state,
-                            lm_state=hyp.lm_state,
-                            lm_scores=hyp.lm_scores,
-                        )
-
-                        if k == 0:
-                            list_b.append(new_hyp)
-                        else:
-                            new_hyp.yseq.append(int(k))
-
-                            if self.use_lm:
-                                new_hyp.score += self.lm_weight * float(
-                                    hyp.lm_scores[k]
-                                )
-
-                            list_exp.append(new_hyp)
-
-                if not list_exp:
-                    kept_hyps = sorted(list_b, key=lambda x: x.score, reverse=True)[
-                        :beam
-                    ]
-
-                    break
-                else:
-                    beam_state = self.decoder.create_batch_states(
-                        beam_state,
-                        [hyp.dec_state for hyp in list_exp],
-                        [hyp.yseq for hyp in list_exp],
-                    )
-
-                    beam_dec_out, beam_state, beam_lm_tokens = self.decoder.batch_score(
-                        list_exp,
-                        beam_state,
-                        cache,
-                        self.use_lm,
-                    )
-
-                    if self.use_lm:
-                        beam_lm_states = create_lm_batch_states(
-                            [hyp.lm_state for hyp in list_exp],
-                            self.lm_layers,
-                            self.is_wordlm,
-                        )
-                        beam_lm_states, beam_lm_scores = self.lm.buff_predict(
-                            beam_lm_states, beam_lm_tokens, len(list_exp)
-                        )
-
-                    if n < (self.nstep - 1):
-                        for i, hyp in enumerate(list_exp):
-                            hyp.dec_out.append(beam_dec_out[i])
-                            hyp.dec_state = self.decoder.select_state(beam_state, i)
-
-                            if self.use_lm:
-                                hyp.lm_state = select_lm_state(
-                                    beam_lm_states, i, self.lm_layers, self.is_wordlm
-                                )
-                                hyp.lm_scores = beam_lm_scores[i]
-
-                        hyps = list_exp[:]
-                    else:
-                        beam_logp = torch.log_softmax(
-                            self.joint_network(beam_enc_out, beam_dec_out)
-                            / self.softmax_temperature,
-                            dim=-1,
-                        )
-
-                        for i, hyp in enumerate(list_exp):
-                            hyp.score += float(beam_logp[i, 0])
-
-                            hyp.dec_out.append(beam_dec_out[i])
-                            hyp.dec_state = self.decoder.select_state(beam_state, i)
-
-                            if self.use_lm:
-                                hyp.lm_state = select_lm_state(
-                                    beam_lm_states, i, self.lm_layers, self.is_wordlm
-                                )
-                                hyp.lm_scores = beam_lm_scores[i]
-
-                        kept_hyps = sorted(
-                            list_b + list_exp, key=lambda x: x.score, reverse=True
-                        )[:beam]
 
         return self.sort_nbest(kept_hyps)

@@ -22,6 +22,19 @@ import math
 
 from typing import List
 
+class ComplexPosEmbedding(nn.Module):
+    def __init__(self, num_embeddings, embedding_dim):
+        super().__init__()
+        self.embedding_r, self.embedding_i = nn.Embedding(num_embeddings, embedding_dim), nn.Embedding(num_embeddings, embedding_dim)
+        self.flag = torch.arange(num_embeddings)
+
+    def forward(self, x_r, x_i):
+        # B C T F
+
+        # F C -> 1 C 1 F
+        flag = self.flag.to(x_r.device)
+        return x_r + self.embedding_r(flag).transpose(0,1)[None,:,None,:], x_i + self.embedding_i(flag).transpose(0,1)[None,:,None,:]
+
 
 class ComplexMultiSequential(Sequential):
     """Multi-input multi-output torch.nn.Sequential."""
@@ -64,6 +77,20 @@ def _pre_hook(
     if k in state_dict:
         state_dict.pop(k)
 
+class FakeModule(nn.Module):
+    def __init__(self):
+        super().__init__()
+    
+    def forward(self, x_r, x_i):
+        return x_r, x_i
+
+class TransposeModule(nn.Module):
+    def __init__(self, transpose_dim):
+        super().__init__()
+        self.transpose_dim = transpose_dim
+    
+    def forward(self, x_r, x_i, x_mask=None):
+        return x_r.transpose(*self.transpose_dim), x_i.transpose(*self.transpose_dim)
 
 class ComplexPositionalEncoding(torch.nn.Module):
     """Positional encoding.
@@ -161,7 +188,7 @@ class ComplexPositionalEncoding2D(torch.nn.Module):
 
     """
 
-    def __init__(self, d_model, dropout_rate, max_channel_num=5, max_time_len=1000, reverse=False, omit_channel=False, eps=0.01):
+    def __init__(self, d_model, dropout_rate, max_channel_num=5, max_time_len=1000, reverse=False, omit_channel=False, omit_time=False, eps=0.01):
         """Construct an PositionalEncoding object."""
 
         super().__init__()
@@ -174,6 +201,8 @@ class ComplexPositionalEncoding2D(torch.nn.Module):
         self.dropout = ComplexDropout(p=dropout_rate)
         self.pe_r, self.pe_i = None, None
         self.omit_channel = omit_channel
+        self.omit_time = omit_time
+        assert not omit_channel or not omit_time, "there must be one dimension is not omitted"
         self.extend_pe(torch.tensor(0.0).expand(1, max_channel_num, max_time_len), torch.tensor(0.0).expand(1, max_channel_num, max_time_len), eps=eps)
         self._register_load_state_dict_pre_hook(_pre_hook)
 
@@ -203,8 +232,12 @@ class ComplexPositionalEncoding2D(torch.nn.Module):
             if self.omit_channel:
                 # position = torch.ger(torch.ones(x_r.size(1)), torch.arange(1, x_r.size(2)+1, dtype=torch.float32)).unsqueeze(-1)
                 position = torch.arange(x_r.size(2), dtype=torch.float32).unsqueeze(0).expand(x_r.size(1), x_r.size(2)).unsqueeze(-1)
+            elif self.omit_time:
+                position = torch.arange(x_r.size(1), dtype=torch.float32).unsqueeze(1).expand(x_r.size(1), x_r.size(2)).unsqueeze(-1)
             else:
                 position = (10*torch.arange(x_r.size(1), dtype=torch.float32).unsqueeze(1) + torch.arange(x_r.size(2), dtype=torch.float32)).unsqueeze(-1)
+
+
 
         # div_term (0, 2, ..., 255), d_model is odd
         if self.d_model % 2:
@@ -682,10 +715,10 @@ class ComplexTransposeLast(Module):
 
 
 class ComplexSequential(Sequential):
-    def forward(self, input_r, input_t):
+    def forward(self, *args):
         for module in self._modules.values():
-            input_r, input_t = module(input_r, input_t)
-        return input_r, input_t
+            args = module(*args)
+        return args
 
 class ComplexDropout(Module):
     def __init__(self,p=0.5, inplace=True):

@@ -1,331 +1,346 @@
 """Transducer speech recognition model (pytorch)."""
 
-from argparse import ArgumentParser
-from argparse import Namespace
-from dataclasses import asdict
+from distutils.util import strtobool
 import logging
 import math
-import numpy
-from typing import List
 
 import chainer
+from chainer import reporter
 import torch
 
 from espnet.nets.asr_interface import ASRInterface
-from espnet.nets.beam_search_transducer import BeamSearchTransducer
 from espnet.nets.pytorch_backend.nets_utils import get_subsample
 from espnet.nets.pytorch_backend.nets_utils import make_non_pad_mask
-from espnet.nets.pytorch_backend.transducer.arguments import (
-    add_auxiliary_task_arguments,  # noqa: H301
-    add_custom_decoder_arguments,  # noqa: H301
-    add_custom_encoder_arguments,  # noqa: H301
-    add_custom_training_arguments,  # noqa: H301
-    add_decoder_general_arguments,  # noqa: H301
-    add_encoder_general_arguments,  # noqa: H301
-    add_rnn_decoder_arguments,  # noqa: H301
-    add_rnn_encoder_arguments,  # noqa: H301
-    add_transducer_arguments,  # noqa: H301
-)
-from espnet.nets.pytorch_backend.transducer.custom_decoder import CustomDecoder
-from espnet.nets.pytorch_backend.transducer.custom_encoder import CustomEncoder
-from espnet.nets.pytorch_backend.transducer.error_calculator import ErrorCalculator
+from espnet.nets.pytorch_backend.nets_utils import to_device
+from espnet.nets.pytorch_backend.nets_utils import to_torch_tensor
+from espnet.nets.pytorch_backend.rnn.attentions import att_for
+from espnet.nets.pytorch_backend.rnn.encoders import encoder_for
 from espnet.nets.pytorch_backend.transducer.initializer import initializer
-from espnet.nets.pytorch_backend.transducer.rnn_decoder import RNNDecoder
-from espnet.nets.pytorch_backend.transducer.rnn_encoder import encoder_for
-from espnet.nets.pytorch_backend.transducer.transducer_tasks import TransducerTasks
-from espnet.nets.pytorch_backend.transducer.utils import get_decoder_input
-from espnet.nets.pytorch_backend.transducer.utils import valid_aux_encoder_output_layers
-from espnet.nets.pytorch_backend.transformer.attention import (
-    MultiHeadedAttention,  # noqa: H301
-    RelPositionMultiHeadedAttention,  # noqa: H301
-)
+from espnet.nets.pytorch_backend.transducer.loss import TransLoss
+from espnet.nets.pytorch_backend.transducer.rnn_decoders import decoder_for
+from espnet.nets.pytorch_backend.transducer.transformer_decoder import Decoder
+from espnet.nets.pytorch_backend.transducer.utils import prepare_loss_inputs
+from espnet.nets.pytorch_backend.transformer.attention import MultiHeadedAttention
+from espnet.nets.pytorch_backend.transformer.encoder import Encoder
 from espnet.nets.pytorch_backend.transformer.mask import target_mask
-from espnet.nets.pytorch_backend.transformer.plot import PlotAttentionReport
 from espnet.utils.fill_missing_args import fill_missing_args
 
 
 class Reporter(chainer.Chain):
     """A chainer reporter wrapper for transducer models."""
 
-    def report(
-        self,
-        loss: float,
-        loss_trans: float,
-        loss_ctc: float,
-        loss_aux_trans: float,
-        loss_symm_kl_div: float,
-        loss_lm: float,
-        cer: float,
-        wer: float,
-    ):
+    def report(self, loss, cer, wer):
         """Instantiate reporter attributes."""
-        chainer.reporter.report({"loss": loss}, self)
-        chainer.reporter.report({"loss_trans": loss_trans}, self)
-        chainer.reporter.report({"loss_ctc": loss_ctc}, self)
-        chainer.reporter.report({"loss_lm": loss_lm}, self)
-        chainer.reporter.report({"loss_aux_trans": loss_aux_trans}, self)
-        chainer.reporter.report({"loss_symm_kl_div": loss_symm_kl_div}, self)
-        chainer.reporter.report({"cer": cer}, self)
-        chainer.reporter.report({"wer": wer}, self)
+        reporter.report({"cer": cer}, self)
+        reporter.report({"wer": wer}, self)
+        reporter.report({"loss": loss}, self)
 
         logging.info("loss:" + str(loss))
 
 
 class E2E(ASRInterface, torch.nn.Module):
-    """E2E module for transducer models.
+    """E2E module.
 
     Args:
-        idim: Dimension of inputs.
-        odim: Dimension of outputs.
-        args: Namespace containing model options.
-        ignore_id: Padding symbol ID.
-        blank_id: Blank symbol ID.
+        idim (int): dimension of inputs
+        odim (int): dimension of outputs
+        args (Namespace): argument Namespace containing options
 
     """
 
     @staticmethod
-    def add_arguments(parser: ArgumentParser) -> ArgumentParser:
-        """Add arguments for transducer model."""
-        E2E.encoder_add_general_arguments(parser)
-        E2E.encoder_add_rnn_arguments(parser)
-        E2E.encoder_add_custom_arguments(parser)
+    def add_arguments(parser):
+        """Extend arguments for transducer models.
 
-        E2E.decoder_add_general_arguments(parser)
-        E2E.decoder_add_rnn_arguments(parser)
-        E2E.decoder_add_custom_arguments(parser)
+        Both Transformer and RNN modules are supported.
+        General options encapsulate both modules options.
 
-        E2E.training_add_custom_arguments(parser)
-        E2E.transducer_add_arguments(parser)
-        E2E.auxiliary_task_add_arguments(parser)
+        """
+        group = parser.add_argument_group("transformer model setting")
+
+        # Encoder - general
+        group.add_argument(
+            "--etype",
+            default="blstmp",
+            type=str,
+            choices=[
+                "transformer",
+                "lstm",
+                "blstm",
+                "lstmp",
+                "blstmp",
+                "vgglstmp",
+                "vggblstmp",
+                "vgglstm",
+                "vggblstm",
+                "gru",
+                "bgru",
+                "grup",
+                "bgrup",
+                "vgggrup",
+                "vggbgrup",
+                "vgggru",
+                "vggbgru",
+            ],
+            help="Type of encoder network architecture",
+        )
+        group.add_argument(
+            "--elayers",
+            default=4,
+            type=int,
+            help="Number of encoder layers (for shared recognition part "
+            "in multi-speaker asr mode)",
+        )
+        group.add_argument(
+            "--eunits",
+            "-u",
+            default=300,
+            type=int,
+            help="Number of encoder hidden units",
+        )
+        group.add_argument(
+            "--dropout-rate",
+            default=0.0,
+            type=float,
+            help="Dropout rate for the encoder",
+        )
+        # Encoder - RNN
+        group.add_argument(
+            "--eprojs", default=320, type=int, help="Number of encoder projection units"
+        )
+        group.add_argument(
+            "--subsample",
+            default="1",
+            type=str,
+            help="Subsample input frames x_y_z means subsample every x frame "
+            "at 1st layer, every y frame at 2nd layer etc.",
+        )
+        # Attention - general
+        group.add_argument(
+            "--adim",
+            default=320,
+            type=int,
+            help="Number of attention transformation dimensions",
+        )
+        group.add_argument(
+            "--aheads",
+            default=4,
+            type=int,
+            help="Number of heads for multi head attention",
+        )
+        group.add_argument(
+            "--transformer-attn-dropout-rate-encoder",
+            default=0.0,
+            type=float,
+            help="dropout in transformer decoder attention.",
+        )
+        group.add_argument(
+            "--transformer-attn-dropout-rate-decoder",
+            default=0.0,
+            type=float,
+            help="dropout in transformer decoder attention.",
+        )
+        # Attention - RNN
+        group.add_argument(
+            "--atype",
+            default="location",
+            type=str,
+            choices=[
+                "noatt",
+                "dot",
+                "add",
+                "location",
+                "coverage",
+                "coverage_location",
+                "location2d",
+                "location_recurrent",
+                "multi_head_dot",
+                "multi_head_add",
+                "multi_head_loc",
+                "multi_head_multi_res_loc",
+            ],
+            help="Type of attention architecture",
+        )
+        group.add_argument(
+            "--awin", default=5, type=int, help="Window size for location2d attention"
+        )
+        group.add_argument(
+            "--aconv-chans",
+            default=10,
+            type=int,
+            help="Number of attention convolution channels "
+            "(negative value indicates no location-aware attention)",
+        )
+        group.add_argument(
+            "--aconv-filts",
+            default=100,
+            type=int,
+            help="Number of attention convolution filters "
+            "(negative value indicates no location-aware attention)",
+        )
+        # Decoder - general
+        group.add_argument(
+            "--dtype",
+            default="lstm",
+            type=str,
+            choices=["lstm", "gru", "transformer"],
+            help="Type of decoder to use.",
+        )
+        group.add_argument(
+            "--dlayers", default=1, type=int, help="Number of decoder layers"
+        )
+        group.add_argument(
+            "--dunits", default=320, type=int, help="Number of decoder hidden units"
+        )
+        group.add_argument(
+            "--dropout-rate-decoder",
+            default=0.0,
+            type=float,
+            help="Dropout rate for the decoder",
+        )
+        # Decoder - RNN
+        group.add_argument(
+            "--dec-embed-dim",
+            default=320,
+            type=int,
+            help="Number of decoder embeddings dimensions",
+        )
+        group.add_argument(
+            "--dropout-rate-embed-decoder",
+            default=0.0,
+            type=float,
+            help="Dropout rate for the decoder embeddings",
+        )
+        # Transformer
+        group.add_argument(
+            "--transformer-warmup-steps",
+            default=25000,
+            type=int,
+            help="optimizer warmup steps",
+        )
+        group.add_argument(
+            "--transformer-init",
+            type=str,
+            default="pytorch",
+            choices=[
+                "pytorch",
+                "xavier_uniform",
+                "xavier_normal",
+                "kaiming_uniform",
+                "kaiming_normal",
+            ],
+            help="how to initialize transformer parameters",
+        )
+        group.add_argument(
+            "--transformer-input-layer",
+            type=str,
+            default="conv2d",
+            choices=["conv2d", "vgg2l", "linear", "embed"],
+            help="transformer encoder input layer type",
+        )
+        group.add_argument(
+            "--transformer-dec-input-layer",
+            type=str,
+            default="embed",
+            choices=["linear", "embed"],
+            help="transformer decoder input layer type",
+        )
+        group.add_argument(
+            "--transformer-lr",
+            default=10.0,
+            type=float,
+            help="Initial value of learning rate",
+        )
+        # Transducer
+        group.add_argument(
+            "--trans-type",
+            default="warp-transducer",
+            type=str,
+            choices=["warp-transducer"],
+            help="Type of transducer implementation to calculate loss.",
+        )
+        group.add_argument(
+            "--rnnt-mode",
+            default="rnnt",
+            type=str,
+            choices=["rnnt", "rnnt-att"],
+            help="Transducer mode for RNN decoder.",
+        )
+        group.add_argument(
+            "--joint-dim",
+            default=320,
+            type=int,
+            help="Number of dimensions in joint space",
+        )
+        group.add_argument(
+            "--score-norm-transducer",
+            type=strtobool,
+            nargs="?",
+            default=True,
+            help="Normalize transducer scores by length",
+        )
 
         return parser
 
-    @staticmethod
-    def encoder_add_general_arguments(parser: ArgumentParser) -> ArgumentParser:
-        """Add general arguments for encoder."""
-        group = parser.add_argument_group("Encoder general arguments")
-        group = add_encoder_general_arguments(group)
+    def __init__(self, idim, odim, args, ignore_id=-1, blank_id=0):
+        """Construct an E2E object for transducer model.
 
-        return parser
+        Args:
+            idim (int): dimension of inputs
+            odim (int): dimension of outputs
+            args (Namespace): argument Namespace containing options
 
-    @staticmethod
-    def encoder_add_rnn_arguments(parser: ArgumentParser) -> ArgumentParser:
-        """Add arguments for RNN encoder."""
-        group = parser.add_argument_group("RNN encoder arguments")
-        group = add_rnn_encoder_arguments(group)
-
-        return parser
-
-    @staticmethod
-    def encoder_add_custom_arguments(parser: ArgumentParser) -> ArgumentParser:
-        """Add arguments for Custom encoder."""
-        group = parser.add_argument_group("Custom encoder arguments")
-        group = add_custom_encoder_arguments(group)
-
-        return parser
-
-    @staticmethod
-    def decoder_add_general_arguments(parser: ArgumentParser) -> ArgumentParser:
-        """Add general arguments for decoder."""
-        group = parser.add_argument_group("Decoder general arguments")
-        group = add_decoder_general_arguments(group)
-
-        return parser
-
-    @staticmethod
-    def decoder_add_rnn_arguments(parser: ArgumentParser) -> ArgumentParser:
-        """Add arguments for RNN decoder."""
-        group = parser.add_argument_group("RNN decoder arguments")
-        group = add_rnn_decoder_arguments(group)
-
-        return parser
-
-    @staticmethod
-    def decoder_add_custom_arguments(parser: ArgumentParser) -> ArgumentParser:
-        """Add arguments for Custom decoder."""
-        group = parser.add_argument_group("Custom decoder arguments")
-        group = add_custom_decoder_arguments(group)
-
-        return parser
-
-    @staticmethod
-    def training_add_custom_arguments(parser: ArgumentParser) -> ArgumentParser:
-        """Add arguments for Custom architecture training."""
-        group = parser.add_argument_group("Training arguments for custom archictecture")
-        group = add_custom_training_arguments(group)
-
-        return parser
-
-    @staticmethod
-    def transducer_add_arguments(parser: ArgumentParser) -> ArgumentParser:
-        """Add arguments for transducer model."""
-        group = parser.add_argument_group("Transducer model arguments")
-        group = add_transducer_arguments(group)
-
-        return parser
-
-    @staticmethod
-    def auxiliary_task_add_arguments(parser: ArgumentParser) -> ArgumentParser:
-        """Add arguments for auxiliary task."""
-        group = parser.add_argument_group("Auxiliary task arguments")
-        group = add_auxiliary_task_arguments(group)
-
-        return parser
-
-    @property
-    def attention_plot_class(self):
-        """Get attention plot class."""
-        return PlotAttentionReport
-
-    def get_total_subsampling_factor(self) -> float:
-        """Get total subsampling factor."""
-        if self.etype == "custom":
-            return self.encoder.conv_subsampling_factor * int(
-                numpy.prod(self.subsample)
-            )
-        else:
-            return self.enc.conv_subsampling_factor * int(numpy.prod(self.subsample))
-
-    def __init__(
-        self,
-        idim: int,
-        odim: int,
-        args: Namespace,
-        ignore_id: int = -1,
-        blank_id: int = 0,
-        training: bool = True,
-    ):
-        """Construct an E2E object for transducer model."""
+        """
         torch.nn.Module.__init__(self)
 
+        # fill missing arguments for compatibility
         args = fill_missing_args(args, self.add_arguments)
 
-        self.is_transducer = True
+        if args.etype == "transformer":
+            self.subsample = get_subsample(args, mode="asr", arch="transformer")
 
-        self.use_auxiliary_enc_outputs = (
-            True if (training and args.use_aux_transducer_loss) else False
-        )
-
-        self.subsample = get_subsample(
-            args, mode="asr", arch="transformer" if args.etype == "custom" else "rnn-t"
-        )
-
-        if self.use_auxiliary_enc_outputs:
-            n_layers = (
-                ((len(args.enc_block_arch) * args.enc_block_repeat) - 1)
-                if args.enc_block_arch is not None
-                else (args.elayers - 1)
-            )
-
-            aux_enc_output_layers = valid_aux_encoder_output_layers(
-                args.aux_transducer_loss_enc_output_layers,
-                n_layers,
-                args.use_symm_kl_div_loss,
-                self.subsample,
+            self.encoder = Encoder(
+                idim=idim,
+                attention_dim=args.adim,
+                attention_heads=args.aheads,
+                linear_units=args.eunits,
+                num_blocks=args.elayers,
+                input_layer=args.transformer_input_layer,
+                dropout_rate=args.dropout_rate,
+                positional_dropout_rate=args.dropout_rate,
+                attention_dropout_rate=args.transformer_attn_dropout_rate_encoder,
             )
         else:
-            aux_enc_output_layers = []
+            self.subsample = get_subsample(args, mode="asr", arch="rnn-t")
 
-        if args.etype == "custom":
-            if args.enc_block_arch is None:
-                raise ValueError(
-                    "When specifying custom encoder type, --enc-block-arch"
-                    "should also be specified in training config. See"
-                    "egs/vivos/asr1/conf/transducer/train_*.yaml for more info."
-                )
+            self.enc = encoder_for(args, idim, self.subsample)
 
-            self.encoder = CustomEncoder(
-                idim,
-                args.enc_block_arch,
-                input_layer=args.custom_enc_input_layer,
-                repeat_block=args.enc_block_repeat,
-                self_attn_type=args.custom_enc_self_attn_type,
-                positional_encoding_type=args.custom_enc_positional_encoding_type,
-                positionwise_activation_type=args.custom_enc_pw_activation_type,
-                conv_mod_activation_type=args.custom_enc_conv_mod_activation_type,
-                aux_enc_output_layers=aux_enc_output_layers,
-            )
-            encoder_out = self.encoder.enc_out
-        else:
-            self.enc = encoder_for(
-                args,
-                idim,
-                self.subsample,
-                aux_enc_output_layers=aux_enc_output_layers,
-            )
-            encoder_out = args.eprojs
-
-        if args.dtype == "custom":
-            if args.dec_block_arch is None:
-                raise ValueError(
-                    "When specifying custom decoder type, --dec-block-arch"
-                    "should also be specified in training config. See"
-                    "egs/vivos/asr1/conf/transducer/train_*.yaml for more info."
-                )
-
-            self.decoder = CustomDecoder(
-                odim,
-                args.dec_block_arch,
-                input_layer=args.custom_dec_input_layer,
-                repeat_block=args.dec_block_repeat,
-                positionwise_activation_type=args.custom_dec_pw_activation_type,
-                dropout_rate_embed=args.dropout_rate_embed_decoder,
-                blank_id=blank_id,
-            )
-            decoder_out = self.decoder.dunits
-        else:
-            self.dec = RNNDecoder(
-                odim,
-                args.dtype,
-                args.dlayers,
-                args.dunits,
-                args.dec_embed_dim,
+        if args.dtype == "transformer":
+            self.decoder = Decoder(
+                odim=odim,
+                jdim=args.joint_dim,
+                attention_dim=args.adim,
+                attention_heads=args.aheads,
+                linear_units=args.dunits,
+                num_blocks=args.dlayers,
+                input_layer=args.transformer_dec_input_layer,
                 dropout_rate=args.dropout_rate_decoder,
-                dropout_rate_embed=args.dropout_rate_embed_decoder,
-                blank_id=blank_id,
-            )
-            decoder_out = args.dunits
-
-        self.transducer_tasks = TransducerTasks(
-            encoder_out,
-            decoder_out,
-            args.joint_dim,
-            odim,
-            joint_activation_type=args.joint_activation_type,
-            transducer_loss_weight=args.transducer_weight,
-            ctc_loss=args.use_ctc_loss,
-            ctc_loss_weight=args.ctc_loss_weight,
-            ctc_loss_dropout_rate=args.ctc_loss_dropout_rate,
-            lm_loss=args.use_lm_loss,
-            lm_loss_weight=args.lm_loss_weight,
-            lm_loss_smoothing_rate=args.lm_loss_smoothing_rate,
-            aux_transducer_loss=args.use_aux_transducer_loss,
-            aux_transducer_loss_weight=args.aux_transducer_loss_weight,
-            aux_transducer_loss_mlp_dim=args.aux_transducer_loss_mlp_dim,
-            aux_trans_loss_mlp_dropout_rate=args.aux_transducer_loss_mlp_dropout_rate,
-            symm_kl_div_loss=args.use_symm_kl_div_loss,
-            symm_kl_div_loss_weight=args.symm_kl_div_loss_weight,
-            fastemit_lambda=args.fastemit_lambda,
-            blank_id=blank_id,
-            ignore_id=ignore_id,
-            training=training,
-        )
-
-        if training and (args.report_cer or args.report_wer):
-            self.error_calculator = ErrorCalculator(
-                self.decoder if args.dtype == "custom" else self.dec,
-                self.transducer_tasks.joint_network,
-                args.char_list,
-                args.sym_space,
-                args.sym_blank,
-                args.report_cer,
-                args.report_wer,
+                positional_dropout_rate=args.dropout_rate_decoder,
+                attention_dropout_rate=args.transformer_attn_dropout_rate_decoder,
             )
         else:
-            self.error_calculator = None
+            if args.etype == "transformer":
+                args.eprojs = args.adim
+
+            if args.rnnt_mode == "rnnt-att":
+                self.att = att_for(args)
+                self.dec = decoder_for(args, odim, self.att)
+            else:
+                self.dec = decoder_for(args, odim)
 
         self.etype = args.etype
         self.dtype = args.dtype
+        self.rnnt_mode = args.rnnt_mode
 
         self.sos = odim - 1
         self.eos = odim - 1
@@ -336,193 +351,199 @@ class E2E(ASRInterface, torch.nn.Module):
         self.blank = args.sym_blank
 
         self.odim = odim
+        self.adim = args.adim
 
         self.reporter = Reporter()
 
+        self.criterion = TransLoss(args.trans_type, self.blank_id)
+
         self.default_parameters(args)
 
+        if args.report_cer or args.report_wer:
+            from espnet.nets.e2e_asr_common import ErrorCalculatorTrans
+
+            if self.dtype == "transformer":
+                self.error_calculator = ErrorCalculatorTrans(self.decoder, args)
+            else:
+                self.error_calculator = ErrorCalculatorTrans(self.dec, args)
+        else:
+            self.error_calculator = None
+
+        self.logzero = -10000000000.0
         self.loss = None
         self.rnnlm = None
 
-    def default_parameters(self, args: Namespace):
-        """Initialize/reset parameters for transducer.
-
-        Args:
-            args: Namespace containing model options.
-
-        """
+    def default_parameters(self, args):
+        """Initialize/reset parameters for transducer."""
         initializer(self, args)
 
-    def forward(
-        self, feats: torch.Tensor, feats_len: torch.Tensor, labels: torch.Tensor
-    ) -> torch.Tensor:
+    def forward(self, xs_pad, ilens, ys_pad):
         """E2E forward.
 
         Args:
-            feats: Feature sequences. (B, F, D_feats)
-            feats_len: Feature sequences lengths. (B,)
-            labels: Label ID sequences. (B, L)
+            xs_pad (torch.Tensor): batch of padded source sequences (B, Tmax, idim)
+            ilens (torch.Tensor): batch of lengths of input sequences (B)
+            ys_pad (torch.Tensor): batch of padded target sequences (B, Lmax)
 
         Returns:
-            loss: Transducer loss value
+            loss (torch.Tensor): transducer loss value
 
         """
         # 1. encoder
-        feats = feats[:, : max(feats_len)]
+        if self.etype == "transformer":
+            xs_pad = xs_pad[:, : max(ilens)]
+            src_mask = make_non_pad_mask(ilens.tolist()).to(xs_pad.device).unsqueeze(-2)
 
-        if self.etype == "custom":
-            feats_mask = (
-                make_non_pad_mask(feats_len.tolist()).to(feats.device).unsqueeze(-2)
-            )
-
-            _enc_out, _enc_out_len = self.encoder(feats, feats_mask)
+            hs_pad, hs_mask = self.encoder(xs_pad, src_mask)
         else:
-            _enc_out, _enc_out_len, _ = self.enc(feats, feats_len)
+            hs_pad, hs_mask, _ = self.enc(xs_pad, ilens)
+        self.hs_pad = hs_pad
 
-        if self.use_auxiliary_enc_outputs:
-            enc_out, aux_enc_out = _enc_out[0], _enc_out[1]
-            enc_out_len, aux_enc_out_len = _enc_out_len[0], _enc_out_len[1]
-        else:
-            enc_out, aux_enc_out = _enc_out, None
-            enc_out_len, aux_enc_out_len = _enc_out_len, None
+        # 1.5. transducer preparation related
+        ys_in_pad, target, pred_len, target_len = prepare_loss_inputs(ys_pad, hs_mask)
 
         # 2. decoder
-        dec_in = get_decoder_input(labels, self.blank_id, self.ignore_id)
-
-        if self.dtype == "custom":
-            self.decoder.set_device(enc_out.device)
-
-            dec_in_mask = target_mask(dec_in, self.blank_id)
-            dec_out, _ = self.decoder(dec_in, dec_in_mask)
+        if self.dtype == "transformer":
+            ys_mask = target_mask(ys_in_pad, self.blank_id)
+            pred_pad, _ = self.decoder(ys_in_pad, ys_mask, hs_pad)
         else:
-            self.dec.set_device(enc_out.device)
+            if self.rnnt_mode == "rnnt":
+                pred_pad = self.dec(hs_pad, ys_in_pad)
+            else:
+                pred_pad = self.dec(hs_pad, ys_in_pad, pred_len)
+        self.pred_pad = pred_pad
 
-            dec_out = self.dec(dec_in)
+        # 3. loss computation
+        loss = self.criterion(pred_pad, target, pred_len, target_len)
 
-        # 3. transducer tasks computation
-        losses = self.transducer_tasks(
-            enc_out,
-            aux_enc_out,
-            dec_out,
-            labels,
-            enc_out_len,
-            aux_enc_out_len,
-        )
+        self.loss = loss
+        loss_data = float(self.loss)
 
+        # 4. compute cer/wer
         if self.training or self.error_calculator is None:
             cer, wer = None, None
         else:
-            cer, wer = self.error_calculator(
-                enc_out, self.transducer_tasks.get_target()
-            )
-
-        self.loss = sum(losses)
-        loss_data = float(self.loss)
+            cer, wer = self.error_calculator(hs_pad, ys_pad)
 
         if not math.isnan(loss_data):
-            self.reporter.report(
-                loss_data,
-                *[float(loss) for loss in losses],
-                cer,
-                wer,
-            )
+            self.reporter.report(loss_data, cer, wer)
         else:
             logging.warning("loss (=%f) is not correct", loss_data)
 
         return self.loss
 
-    def encode_custom(self, feats: numpy.ndarray) -> torch.Tensor:
+    def encode_transformer(self, x):
         """Encode acoustic features.
 
         Args:
-            feats: Feature sequence. (F, D_feats)
+            x (ndarray): input acoustic feature (T, D)
 
         Returns:
-            enc_out: Encoded feature sequence. (T, D_enc)
+            x (torch.Tensor): encoded features (T, attention_dim)
 
         """
-        feats = torch.as_tensor(feats).unsqueeze(0)
-        enc_out, _ = self.encoder(feats, None)
+        self.eval()
 
-        return enc_out.squeeze(0)
+        x = torch.as_tensor(x).unsqueeze(0)
+        enc_output, _ = self.encoder(x, None)
 
-    def encode_rnn(self, feats: numpy.ndarray) -> torch.Tensor:
+        return enc_output.squeeze(0)
+
+    def encode_rnn(self, x):
         """Encode acoustic features.
 
         Args:
-            feats: Feature sequence. (F, D_feats)
+            x (ndarray): input acoustic feature (T, D)
 
         Returns:
-            enc_out: Encoded feature sequence. (T, D_enc)
+            x (torch.Tensor): encoded features (T, attention_dim)
 
         """
-        p = next(self.parameters())
+        self.eval()
 
-        feats_len = [feats.shape[0]]
+        ilens = [x.shape[0]]
 
-        feats = feats[:: self.subsample[0], :]
-        feats = torch.as_tensor(feats, device=p.device, dtype=p.dtype)
-        feats = feats.contiguous().unsqueeze(0)
+        x = x[:: self.subsample[0], :]
+        h = to_device(self, to_torch_tensor(x).float())
+        hs = h.contiguous().unsqueeze(0)
 
-        enc_out, _, _ = self.enc(feats, feats_len)
+        h, _, _ = self.enc(hs, ilens)
 
-        return enc_out.squeeze(0)
+        return h[0]
 
-    def recognize(
-        self, feats: numpy.ndarray, beam_search: BeamSearchTransducer
-    ) -> List:
+    def recognize(self, x, recog_args, char_list=None, rnnlm=None):
         """Recognize input features.
 
         Args:
-            feats: Feature sequence. (F, D_feats)
-            beam_search: Beam search class.
+            x (ndarray): input acoustic feature (T, D)
+            recog_args (namespace): argument Namespace containing options
+            char_list (list): list of characters
+            rnnlm (torch.nn.Module): language model module
 
         Returns:
-            nbest_hyps: N-best decoding results.
+            y (list): n-best decoding results
 
         """
-        self.eval()
-
-        if self.etype == "custom":
-            enc_out = self.encode_custom(feats)
+        if self.etype == "transformer":
+            h = self.encode_transformer(x)
         else:
-            enc_out = self.encode_rnn(feats)
+            h = self.encode_rnn(x)
+        params = [h, recog_args]
 
-        nbest_hyps = beam_search(enc_out)
+        if recog_args.beam_size == 1:
+            if self.dtype == "transformer":
+                nbest_hyps = self.decoder.recognize(*params)
+            else:
+                nbest_hyps = self.dec.recognize(*params)
+        else:
+            params.append(rnnlm)
+            if self.dtype == "transformer":
+                nbest_hyps = self.decoder.recognize_beam(*params)
+            else:
+                nbest_hyps = self.dec.recognize_beam(*params)
 
-        return [asdict(n) for n in nbest_hyps]
+        return nbest_hyps
 
-    def calculate_all_attentions(
-        self, feats: torch.Tensor, feats_len: torch.Tensor, labels: torch.Tensor
-    ) -> numpy.ndarray:
+    def calculate_all_attentions(self, xs_pad, ilens, ys_pad):
         """E2E attention calculation.
 
         Args:
-            feats: Feature sequences. (B, F, D_feats)
-            feats_len: Feature sequences lengths. (B,)
-            labels: Label ID sequences. (B, L)
+            xs_pad (torch.Tensor): batch of padded input sequences (B, Tmax, idim)
+            ilens (torch.Tensor): batch of lengths of input sequences (B)
+            ys_pad (torch.Tensor):
+                batch of padded character id sequence tensor (B, Lmax)
 
         Returns:
-            ret: Attention weights with the following shape,
-                1) multi-head case => attention weights. (B, D_att, U, T),
-                2) other case => attention weights. (B, U, T)
+            ret (ndarray): attention weights with the following shape,
+            1) multi-head case => attention weights (B, H, Lmax, Tmax),
+            2) other case => attention weights (B, Lmax, Tmax).
 
         """
         self.eval()
+        if (
+            self.etype == "transformer"
+            and self.dtype != "transformer"
+            and self.rnnt_mode == "rnnt-att"
+        ):
+            raise NotImplementedError(
+                "Transformer encoder with rnn attention decoder" "is not supported yet."
+            )
+        elif self.etype != "transformer" and self.dtype != "transformer":
+            if self.rnnt_mode == "rnnt":
+                return []
+            else:
+                with torch.no_grad():
+                    hs_pad, hlens = xs_pad, ilens
+                    hpad, hlens, _ = self.enc(hs_pad, hlens)
 
-        if self.etype != "custom" and self.dtype != "custom":
-            return []
+                    ret = self.dec.calculate_all_attentions(hpad, hlens, ys_pad)
         else:
             with torch.no_grad():
-                self.forward(feats, feats_len, labels)
+                self.forward(xs_pad, ilens, ys_pad)
 
-            ret = dict()
-            for name, m in self.named_modules():
-                if isinstance(m, MultiHeadedAttention) or isinstance(
-                    m, RelPositionMultiHeadedAttention
-                ):
-                    ret[name] = m.attn.cpu().numpy()
-
+                ret = dict()
+                for name, m in self.named_modules():
+                    if isinstance(m, MultiHeadedAttention):
+                        ret[name] = m.attn.cpu().numpy()
         self.train()
-
         return ret

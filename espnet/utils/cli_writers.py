@@ -4,6 +4,7 @@ from typing import Dict
 import h5py
 import kaldiio
 import numpy
+import numpy as np
 import soundfile
 
 from espnet.utils.cli_utils import assert_scipy_wav_style
@@ -75,6 +76,10 @@ def file_writer_helper(
         return SoundWriter(
             wspecifier, write_num_frames=write_num_frames, pcm_format=pcm_format
         )
+    # elif filetype == "npz":
+    #     return NumpyWriter(
+    #         wspecifier, write_num_frames=write_num_frames, compress=compress
+    #     )
     else:
         raise NotImplementedError(f"filetype={filetype}")
 
@@ -151,6 +156,41 @@ class KaldiWriter(BaseWriter):
         self.writer[key] = value
         if self.writer_nframe is not None:
             self.writer_nframe.write(f"{key} {len(value)}\n")
+
+
+# class NumpyWriter(BaseWriter):
+#     """NumpyWriter
+
+#     Examples:
+#         >>> with NumpyWriter('ark:out.npz', compress=True) as f:
+#         ...     f['key'] = array
+#     """
+#     def __init__(self, wspecifier, write_num_frames=None, compress=False):
+#         spec_dict = parse_wspecifier(wspecifier)
+
+#         if compress:
+#             self.writer = np.savez_compressed
+#         else:
+#             self.writer = np.savez
+
+#         if "scp" in spec_dict:
+#             self.writer_scp = open(spec_dict["scp"], "w", encoding="utf-8")
+#         else:
+#             self.writer_scp = None
+
+#         if write_num_frames is not None:
+#             self.writer_nframe = get_num_frames_writer(write_num_frames)
+#         else:
+#             self.writer_nframe = None
+    
+#     def __setitem__(self, key, value):
+#         self.writer.create_dataset(key, data=value, **self.kwargs)
+
+#         if self.writer_scp is not None:
+#             self.writer_scp.write(f"{key} {self.filename}:{key}\n")
+#         if self.writer_nframe is not None:
+#             self.writer_nframe.write(f"{key} {len(value)}\n")
+        
 
 
 def parse_wspecifier(wspecifier: str) -> Dict[str, str]:
@@ -280,3 +320,5 @@ class SoundWriter(BaseWriter):
             self.writer_scp.write(f"{key} {wavfile}\n")
         if self.writer_nframe is not None:
             self.writer_nframe.write(f"{key} {len(signal)}\n")
+
+

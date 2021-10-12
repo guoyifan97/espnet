@@ -77,6 +77,8 @@ class Universal_Frontend_Time_Attention_Pos_Enc(nn.Module):
                 self.conv_layers.append(BasicBlock(temp_inplane, i, kernel_size=3, dilation=conv_layer_dilation[index*2: index*2+2],))
             temp_inplane = i
 
+        self.after_cnn_norm = c_nn.ComplexLayerNorm(1, affine=False)
+
         if temp_inplane != 1:
             if downconv_type == "conv1d":
                 self.downconv = c_nn.ComplexConv2d(temp_inplane, 1, kernel_size=1)
@@ -100,6 +102,9 @@ class Universal_Frontend_Time_Attention_Pos_Enc(nn.Module):
         print(f"We use {reduce_method} as reduce method")
         if use_pos_embed:
             print(f"We use {pos_embed_type} as pos embedding method")
+
+        if beamformer_return_mask:
+            print("We multiply the mask with the orig input")
 
         self.return_mask = beamformer_return_mask
 
@@ -157,6 +162,8 @@ class Universal_Frontend_Time_Attention_Pos_Enc(nn.Module):
         # Beamformer / ResNet: B*C 1 T F -> B*C C' T F
         for conv in self.conv_layers:
             x_time_r, x_time_i = conv(x_time_r, x_time_i)
+
+        x_time_r, x_time_i = self.after_cnn_norm(x_time_r, x_time_i)
 
         # B*C C' T F -> B*C 1 T F 
         if hasattr(self, "downconv"):
@@ -371,7 +378,7 @@ class BeamformingModule(nn.Module):
             elif pos_embed_type == "omit_channel":
                 self.pos_embed = c_nn.ComplexPositionalEncoding2D(att_feat, dropout_rate, omit_channel=True)
         else:
-            self.pos_embed = FakeModule()
+            self.pos_embed = c_nn.FakeModule()
         
         self.time_before_norm = c_nn.ComplexLayerNorm(1, affine=False)
         
@@ -413,6 +420,13 @@ class BeamformingModule(nn.Module):
                         use_mask=False,
                     )
                 )
+            elif n_time_blocks > 0:
+                self.add_module.append(
+                    c_nn.TransposeModule(
+                        transpose_dim=[1,2],
+                    )
+                )
+
             for _ in range(n_time_blocks-1):
                 self.att_module.append(
                     BeamformingLayerShengDai(
@@ -691,12 +705,6 @@ class MSELoss(nn.Module):
              )
 
 
-class FakeModule(nn.Module):
-    def __init__(self):
-        super().__init__()
-    
-    def forward(self, x_r, x_i):
-        return x_r, x_i
 
 
 def make_non_pad_mask(lengths, xs=None, length_dim=-1):

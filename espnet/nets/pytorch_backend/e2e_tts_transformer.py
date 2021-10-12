@@ -1,3 +1,6 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
 # Copyright 2019 Tomoki Hayashi
 #  Apache 2.0  (http://www.apache.org/licenses/LICENSE-2.0)
 
@@ -23,6 +26,8 @@ from espnet.nets.pytorch_backend.transformer.embedding import ScaledPositionalEn
 from espnet.nets.pytorch_backend.transformer.encoder import Encoder
 from espnet.nets.pytorch_backend.transformer.initializer import initialize
 from espnet.nets.pytorch_backend.transformer.mask import subsequent_mask
+from espnet.nets.pytorch_backend.transformer.plot import _plot_and_save_attention
+from espnet.nets.pytorch_backend.transformer.plot import PlotAttentionReport
 from espnet.nets.tts_interface import TTSInterface
 from espnet.utils.cli_utils import strtobool
 from espnet.utils.fill_missing_args import fill_missing_args
@@ -45,8 +50,8 @@ class GuidedMultiHeadAttentionLoss(GuidedAttentionLoss):
         Args:
             att_ws (Tensor):
                 Batch of multi head attention weights (B, H, T_max_out, T_max_in).
-            ilens (LongTensor): Batch of input lengths (B,).
-            olens (LongTensor): Batch of output lengths (B,).
+            ilens (LongTensor): Batch of input lenghts (B,).
+            olens (LongTensor): Batch of output lenghts (B,).
 
         Returns:
             Tensor: Guided attention loss value.
@@ -68,48 +73,36 @@ class GuidedMultiHeadAttentionLoss(GuidedAttentionLoss):
         return self.alpha * loss
 
 
-try:
-    from espnet.nets.pytorch_backend.transformer.plot import PlotAttentionReport
-except (ImportError, TypeError):
-    TTSPlot = None
-else:
+class TTSPlot(PlotAttentionReport):
+    """Attention plot module for TTS-Transformer."""
 
-    class TTSPlot(PlotAttentionReport):
-        """Attention plot module for TTS-Transformer."""
+    def plotfn(self, data, attn_dict, outdir, suffix="png", savefn=None):
+        """Plot multi head attentions.
 
-        def plotfn(
-            self, data_dict, uttid_list, attn_dict, outdir, suffix="png", savefn=None
-        ):
-            """Plot multi head attentions.
+        Args:
+            data (dict): Utts info from json file.
+            attn_dict (dict): Multi head attention dict.
+                Values should be numpy.ndarray (H, L, T)
+            outdir (str): Directory name to save figures.
+            suffix (str): Filename suffix including image type (e.g., png).
+            savefn (function): Function to save figures.
 
-            Args:
-                data_dict (dict): Utts info from json file.
-                uttid_list (list): List of utt_id.
-                attn_dict (dict): Multi head attention dict.
-                    Values should be numpy.ndarray (H, L, T)
-                outdir (str): Directory name to save figures.
-                suffix (str): Filename suffix including image type (e.g., png).
-                savefn (function): Function to save figures.
+        """
+        import matplotlib.pyplot as plt
 
-            """
-            import matplotlib.pyplot as plt
-            from espnet.nets.pytorch_backend.transformer.plot import (
-                _plot_and_save_attention,  # noqa: H301
-            )
-
-            for name, att_ws in attn_dict.items():
-                for utt_id, att_w in zip(uttid_list, att_ws):
-                    filename = "%s/%s.%s.%s" % (outdir, utt_id, name, suffix)
-                    if "fbank" in name:
-                        fig = plt.Figure()
-                        ax = fig.subplots(1, 1)
-                        ax.imshow(att_w, aspect="auto")
-                        ax.set_xlabel("frames")
-                        ax.set_ylabel("fbank coeff")
-                        fig.tight_layout()
-                    else:
-                        fig = _plot_and_save_attention(att_w, filename)
-                    savefn(fig, filename)
+        for name, att_ws in attn_dict.items():
+            for idx, att_w in enumerate(att_ws):
+                filename = "%s/%s.%s.%s" % (outdir, data[idx][0], name, suffix)
+                if "fbank" in name:
+                    fig = plt.Figure()
+                    ax = fig.subplots(1, 1)
+                    ax.imshow(att_w, aspect="auto")
+                    ax.set_xlabel("frames")
+                    ax.set_ylabel("fbank coeff")
+                    fig.tight_layout()
+                else:
+                    fig = _plot_and_save_attention(att_w, filename)
+                savefn(fig, filename)
 
 
 class Transformer(TTSInterface, torch.nn.Module):
@@ -659,8 +652,7 @@ class Transformer(TTSInterface, torch.nn.Module):
         )
         if self.use_guided_attn_loss:
             self.attn_criterion = GuidedMultiHeadAttentionLoss(
-                sigma=args.guided_attn_loss_sigma,
-                alpha=args.guided_attn_loss_lambda,
+                sigma=args.guided_attn_loss_sigma, alpha=args.guided_attn_loss_lambda,
             )
 
         # initialize parameters
@@ -749,18 +741,13 @@ class Transformer(TTSInterface, torch.nn.Module):
 
         # modifiy mod part of groundtruth
         if self.reduction_factor > 1:
-            assert olens.ge(
-                self.reduction_factor
-            ).all(), "Output length must be greater than or equal to reduction factor."
             olens = olens.new([olen - olen % self.reduction_factor for olen in olens])
             max_olen = max(olens)
             ys = ys[:, :max_olen]
             labels = labels[:, :max_olen]
-            labels = torch.scatter(
-                labels, 1, (olens - 1).unsqueeze(1), 1.0
-            )  # see #3388
+            labels[:, -1] = 1.0  # make sure at least one frame has 1
 
-        # calculate loss values
+        # caluculate loss values
         l1_loss, l2_loss, bce_loss = self.criterion(
             after_outs, before_outs, logits, ys, labels, olens
         )

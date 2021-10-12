@@ -2,6 +2,8 @@ import librosa
 import numpy
 import scipy
 import soundfile
+import torchaudio
+import torch
 
 from espnet.utils.io_utils import SoundHDF5File
 
@@ -196,6 +198,7 @@ class NoiseInjection(object):
 
     def __init__(
         self,
+        sr=16000,
         utt2noise=None,
         lower=-20,
         upper=-5,
@@ -240,6 +243,8 @@ class NoiseInjection(object):
                 raise ValueError(filetype)
         else:
             self.utt2noise = None
+
+        assert sr == self.utt2noise[self.utt2noise.keys()[0]][1], ""
 
         if utt2noise is not None and utt2ratio is not None:
             if set(self.utt2ratio) != set(self.utt2noise):
@@ -301,7 +306,12 @@ class NoiseInjection(object):
 
 
 class RIRConvolve(object):
-    def __init__(self, utt2rir, filetype="list"):
+    """ 
+        utt2rir文件需要保存成:
+            1) .hdf5格式:   {key: (rir, sr)} or 
+            2) rir(noise).scp:     uttid rir.wav
+    """
+    def __init__(self, utt2rir, sr=16000, filetype="list"):
         self.utt2rir_file = utt2rir
         self.filetype = filetype
 
@@ -312,11 +322,14 @@ class RIRConvolve(object):
                     utt, filename = line.rstrip().split(None, 1)
                     signal, rate = soundfile.read(filename, dtype="int16")
                     self.utt2rir[utt] = (signal, rate)
+        
 
         elif filetype == "sound.hdf5":
             self.utt2rir = SoundHDF5File(utt2rir, "r")
         else:
             raise NotImplementedError(filetype)
+        
+        assert sr == self.utt2rir[self.utt2rir.keys()[0]][1], ""
 
     def __repr__(self):
         return '{}("{}")'.format(self.__class__.__name__, self.utt2rir_file)
@@ -342,3 +355,101 @@ class RIRConvolve(object):
             )
         else:
             return scipy.convolve(x, rir, mode="same")
+
+class FarFieldSimu(object):
+    """ Generate Farfield simulated data.
+
+        utt2rir & utt2noise 文件需要保存成:
+            1) .hdf5格式:       {key: (audio, sr)} 
+            2) wav.scp:         uttid  rir.wav
+        
+        Args:
+            sr: input sample rate
+
+            rir_filetype: the filetype of utt2rir file "list" or "hdf5"
+            use_rir_prob: the probability of reverberation simu
+
+            lower, upper: the lower and upper bound of signal-noise ratio
+            utt2ratio: FILELIST, specify the noise utt with a ratio,  egs: utt1 ratio1
+            noise_filetype: refer to 'rir_filetype'
+            dbunit: use dB as the unit of 'lower' and 'upper' or not
+            noise_seed: Random number seed for selecting noise id and snr ratio
+            use_noise_prop: refer to 'use_rir_prob'
+            seed: Random number seed for whether use rir and noise
+    """
+    def __init__(
+        self,
+        sr=16000,
+        # add reverberation
+        utt2rir=None,
+        rir_filetype="list",
+        use_rir_prob=1.0,
+        # add noise 
+        utt2noise=None,
+        lower=0,
+        upper=30,
+        utt2ratio=None,
+        noise_filetype="list",
+        dbunit=True,
+        noise_seed=None,
+        use_noise_prob=1.0,
+        seed=None,
+        ):
+
+        assert use_noise_prob<=1.0 and use_noise_prob >=0, ""
+        assert use_rir_prob<=1.0 and use_rir_prob >=0, ""
+        self.rir_convolve= RIRConvolve(utt2rir, sr, rir_filetype)
+        self.noise_injection = NoiseInjection(sr, utt2noise, -upper, -lower, utt2ratio, noise_filetype, dbunit, seed) 
+        self.use_rir_prob = use_rir_prob
+        self.use_noise_prob = use_noise_prob
+        self.state = numpy.random.RandomState(seed)
+        self.sr = sr
+
+
+    def __repr__(self):
+        return f"{self.__class__.__name} ({self.rir_convolve} {self.noise_injection})"
+    
+    def __call__(self, audio, sr, rir_uttid=None, noise_uttid=None, train=True):
+        
+        assert isinstance(audio, numpy.ndarray)
+        assert sr == self.sr, ""
+        assert audio.ndim == 1, ""
+
+        if self.state.random() <= self.use_rir_prob:
+            audio = self.rir_convolve(audio, rir_uttid, train)
+        if self.state.random() <= self.use_noise_prob:
+            audio = self.noise_injection(audio, noise_uttid, train)
+        
+        return audio
+        
+class TimeStretch(object):
+    def __init__(
+        self,
+        lower=0.9,
+        upper=1.5,
+        seed=None,
+        ):
+
+        self.lower = lower
+        self.upper = upper
+        self.state = numpy.random.RandomState(seed)
+
+    def __repr__(self):
+        return f"{self.__class__.__name} upper: {self.upper}, lower: {self.lower}"
+    
+    def __call__(self, audio, sr, train=True):
+        if not train:
+            return audio
+        assert isinstance(audio, torch.Tensor)
+
+        ratio = float(0.6 * self.state.random() + 0.9)
+        audio, sr = torchaudio.sox_effects.apply_effects_tensor(audio, sr, [
+            ["tempo", f"{ratio}"],
+            ["rate", f"{sr}"],
+        ])
+
+        return audio
+
+
+    
+        
