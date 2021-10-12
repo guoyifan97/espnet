@@ -1,4 +1,4 @@
-"""Utility functions for Transducer models."""
+"""Utility functions for transducer models."""
 
 import os
 from typing import Any
@@ -379,7 +379,7 @@ def check_batch_states(states, max_len, pad_id):
 
 
 def custom_torch_load(model_path: str, model: torch.nn.Module, training: bool = True):
-    """Load Transducer model with training-only modules and parameters removed.
+    """Load transducer model with training-only modules and parameters removed.
 
     Args:
         model_path: Model path.

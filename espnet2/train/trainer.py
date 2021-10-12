@@ -65,6 +65,7 @@ except ImportError:
 class TrainerOptions:
     ngpu: int
     resume: bool
+    init_with_other_model: bool
     use_amp: bool
     train_dtype: str
     grad_noise: bool
@@ -134,25 +135,34 @@ class Trainer:
         schedulers: Sequence[Optional[AbsScheduler]],
         scaler: Optional[GradScaler],
         ngpu: int = 0,
+        init_with_other_model: bool = False,
     ):
-        states = torch.load(
-            checkpoint,
-            map_location=f"cuda:{torch.cuda.current_device()}" if ngpu > 0 else "cpu",
-        )
-        model.load_state_dict(states["model"])
-        reporter.load_state_dict(states["reporter"])
-        for optimizer, state in zip(optimizers, states["optimizers"]):
-            optimizer.load_state_dict(state)
-        for scheduler, state in zip(schedulers, states["schedulers"]):
-            if scheduler is not None:
-                scheduler.load_state_dict(state)
-        if scaler is not None:
-            if states["scaler"] is None:
-                logging.warning("scaler state is not found")
-            else:
-                scaler.load_state_dict(states["scaler"])
+        try:
+            states = torch.load(
+                checkpoint,
+                map_location=f"cuda:{torch.cuda.current_device()}" if ngpu > 0 else "cpu",
+            )
+            model.load_state_dict(states["model"])
+            reporter.load_state_dict(states["reporter"])
+            for optimizer, state in zip(optimizers, states["optimizers"]):
+                optimizer.load_state_dict(state)
+            for scheduler, state in zip(schedulers, states["schedulers"]):
+                if scheduler is not None:
+                    scheduler.load_state_dict(state)
+            if scaler is not None:
+                if states["scaler"] is None:
+                    logging.warning("scaler state is not found")
+                else:
+                    scaler.load_state_dict(states["scaler"])
 
-        logging.info(f"The training was resumed using {checkpoint}")
+            logging.info(f"The training was resumed using {checkpoint}")
+        except Exception:
+            if not init_with_other_model:
+                raise Exception
+            else:
+                logging.info(f"Model doesn't match, try to load it partially!")
+                missing_keys, unexpected_keys = model.load_state_dict(states["model"], strict=False)
+                logging.info(f"Load partially Succeed with\nMissing Keys:\n{str(missing_keys)}\nUnexpected Keys:\n{str(unexpected_keys)}")
 
     @classmethod
     def run(
@@ -207,6 +217,7 @@ class Trainer:
                 reporter=reporter,
                 scaler=scaler,
                 ngpu=trainer_options.ngpu,
+                init_with_other_model=trainer_options.init_with_other_model,
             )
 
         start_epoch = reporter.get_epoch() + 1

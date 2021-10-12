@@ -527,6 +527,12 @@ class AbsTask(ABC):
             help="Enable resuming if checkpoint is existing",
         )
         group.add_argument(
+            "--init_with_other_model",
+            type=str2bool,
+            default=False,
+            help="when model doesn't match, just load matched ones",
+        )
+        group.add_argument(
             "--train_dtype",
             default="float32",
             choices=["float16", "float32", "float64"],

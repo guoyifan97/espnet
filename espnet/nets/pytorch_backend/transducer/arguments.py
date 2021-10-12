@@ -248,12 +248,12 @@ def add_custom_training_arguments(group: _ArgumentGroup) -> _ArgumentGroup:
 
 
 def add_transducer_arguments(group: _ArgumentGroup) -> _ArgumentGroup:
-    """Define general arguments for Transducer model."""
+    """Define general arguments for transducer model."""
     group.add_argument(
         "--transducer-weight",
         default=1.0,
         type=float,
-        help="Weight of main Transducer loss.",
+        help="Weight of transducer loss when auxiliary task is used.",
     )
     group.add_argument(
         "--joint-dim",
@@ -273,7 +273,7 @@ def add_transducer_arguments(group: _ArgumentGroup) -> _ArgumentGroup:
         type=strtobool,
         nargs="?",
         default=True,
-        help="Normalize Transducer scores by length",
+        help="Normalize transducer scores by length",
     )
     group.add_argument(
         "--fastemit-lambda",
@@ -330,13 +330,14 @@ def add_auxiliary_task_arguments(group: _ArgumentGroup) -> _ArgumentGroup:
         type=strtobool,
         nargs="?",
         default=False,
-        help="Whether to compute auxiliary Transducer loss.",
+        help="Whether to compute auxiliary transducer loss with "
+        "intermediate encoder layers.",
     )
     group.add_argument(
         "--aux-transducer-loss-weight",
         default=0.0,
         type=float,
-        help="Weight of auxiliary Transducer loss.",
+        help="Weight of auxiliary transducer loss.",
     )
     group.add_argument(
         "--aux-transducer-loss-enc-output-layers",
@@ -349,13 +350,13 @@ def add_auxiliary_task_arguments(group: _ArgumentGroup) -> _ArgumentGroup:
         "--aux-transducer-loss-mlp-dim",
         default=320,
         type=int,
-        help="Multilayer perceptron hidden dimension for auxiliary Transducer loss.",
+        help="Multi-layer perceptron hidden dimension for auxiliary transducer loss.",
     )
     group.add_argument(
         "--aux-transducer-loss-mlp-dropout-rate",
         default=0.0,
         type=float,
-        help="Multilayer perceptron dropout rate for auxiliary Transducer loss.",
+        help="Multi-layer perceptron dropout rate for auxiliary transducer loss.",
     )
     group.add_argument(
         "--use-symm-kl-div-loss",

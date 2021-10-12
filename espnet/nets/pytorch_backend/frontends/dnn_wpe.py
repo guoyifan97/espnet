@@ -59,7 +59,7 @@ class DNN_WPE(torch.nn.Module):
         # (B, T, C, F) -> (B, F, C, T)
         enhanced = data = data.permute(0, 3, 2, 1)
         mask = None
-
+        
         for i in range(self.iterations):
             # Calculate power: (..., C, T)
             power = enhanced.real ** 2 + enhanced.imag ** 2

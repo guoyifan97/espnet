@@ -1,4 +1,4 @@
-"""Search algorithms for Transducer models."""
+"""Search algorithms for transducer models."""
 
 import logging
 from typing import List
@@ -22,7 +22,7 @@ from espnet.nets.transducer_decoder_interface import Hypothesis
 
 
 class BeamSearchTransducer:
-    """Beam search implementation for Transducer."""
+    """Beam search implementation for transducer."""
 
     def __init__(
         self,
@@ -42,7 +42,7 @@ class BeamSearchTransducer:
         softmax_temperature: float = 1.0,
         nbest: int = 1,
     ):
-        """Initialize Transducer search module.
+        """Initialize transducer beam search.
 
         Args:
             decoder: Decoder module.
@@ -701,7 +701,7 @@ class BeamSearchTransducer:
     ) -> List[ExtendedHypothesis]:
         """It's the modified Adaptive Expansion Search (mAES) implementation.
 
-        Based on/modified from https://ieeexplore.ieee.org/document/9250505 and NSC.
+        Based on/modified from https://ieeexplore.ieee.org/document/9250505
 
         Args:
             enc_out: Encoder output sequence. (T, D_enc)

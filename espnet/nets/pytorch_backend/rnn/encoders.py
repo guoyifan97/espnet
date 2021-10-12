@@ -67,7 +67,7 @@ class RNNP(torch.nn.Module):
         for layer in six.moves.range(self.elayers):
             if not isinstance(ilens, torch.Tensor):
                 ilens = torch.tensor(ilens)
-            xs_pack = pack_padded_sequence(xs_pad, ilens.cpu(), batch_first=True)
+            xs_pack = pack_padded_sequence(xs_pad, ilens.cpu(), batch_first=True, enforce_sorted=False)
             rnn = getattr(self, ("birnn" if self.bidir else "rnn") + str(layer))
             rnn.flatten_parameters()
             if prev_state is not None and rnn.bidirectional:

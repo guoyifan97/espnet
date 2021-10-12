@@ -13,7 +13,7 @@ import torch
 
 @dataclass
 class Hypothesis:
-    """Default hypothesis definition for Transducer search algorithms."""
+    """Default hypothesis definition for transducer search algorithms."""
 
     score: float
     yseq: List[int]
@@ -34,7 +34,7 @@ class ExtendedHypothesis(Hypothesis):
 
 
 class TransducerDecoderInterface:
-    """Decoder interface for Transducer models."""
+    """Decoder interface for transducer models."""
 
     def init_state(
         self,

@@ -384,6 +384,7 @@ class ASRTask(AbsTask):
         # 1. frontend
         if args.input_size is None:
             # Extract features in the model
+            # return torch model, for example DefaultFrontend: Guo
             frontend_class = frontend_choices.get_class(args.frontend)
             frontend = frontend_class(**args.frontend_conf)
             input_size = frontend.output_size()

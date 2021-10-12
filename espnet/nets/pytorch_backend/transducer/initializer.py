@@ -1,4 +1,4 @@
-"""Parameter initialization for Transducer model."""
+"""Parameter initialization for transducer model."""
 
 from argparse import Namespace
 import math
@@ -9,7 +9,7 @@ from espnet.nets.pytorch_backend.initialization import set_forget_bias_to_one
 
 
 def initializer(model: torch.nn.Module, args: Namespace):
-    """Initialize Transducer model.
+    """Initialize transducer model.
 
     Args:
         model: Transducer model.
