@@ -123,6 +123,7 @@ def build_batch_sampler(
 
     elif type == "folded":
         if len(fold_lengths) != len(shape_files):
+            print(fold_lengths)
             raise ValueError(
                 f"The number of fold_lengths must be equal to "
                 f"the number of shape_files: "

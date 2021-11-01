@@ -1,98 +1,96 @@
-"""Decoder layer definition for transformer-transducer models."""
+"""Transformer decoder layer definition for custom Transducer model."""
+
+from typing import Optional
 
 import torch
-from torch import nn
 
+from espnet.nets.pytorch_backend.transformer.attention import MultiHeadedAttention
 from espnet.nets.pytorch_backend.transformer.layer_norm import LayerNorm
+from espnet.nets.pytorch_backend.transformer.positionwise_feed_forward import (
+    PositionwiseFeedForward,  # noqa: H301
+)
 
 
-class DecoderLayer(nn.Module):
-    """Single decoder layer module for transformer-transducer models.
+class TransformerDecoderLayer(torch.nn.Module):
+    """Transformer decoder layer module for custom Transducer model.
 
     Args:
-        size (int): input dim
-        self_attn (MultiHeadedAttention): self attention module
-        feed_forward (PositionwiseFeedForward): feed forward layer module
-        dropout_rate (float): dropout rate
-        normalize_before (bool): whether to use layer_norm before the first block
-        concat_after (bool): whether to concat attention layer's input and output
+        hdim: Hidden dimension.
+        self_attention: Self-attention module.
+        feed_forward: Feed forward module.
+        dropout_rate: Dropout rate.
 
     """
 
     def __init__(
         self,
-        size,
-        self_attn,
-        feed_forward,
-        dropout_rate,
-        normalize_before=True,
-        concat_after=False,
+        hdim: int,
+        self_attention: MultiHeadedAttention,
+        feed_forward: PositionwiseFeedForward,
+        dropout_rate: float,
     ):
         """Construct an DecoderLayer object."""
-        super(DecoderLayer, self).__init__()
-        self.self_attn = self_attn
+        super().__init__()
+
+        self.self_attention = self_attention
         self.feed_forward = feed_forward
 
-        self.norm1 = LayerNorm(size)
-        self.norm2 = LayerNorm(size)
+        self.norm1 = LayerNorm(hdim)
+        self.norm2 = LayerNorm(hdim)
 
-        self.dropout = nn.Dropout(dropout_rate)
+        self.dropout = torch.nn.Dropout(dropout_rate)
 
-        self.size = size
+        self.hdim = hdim
 
-        self.normalize_before = normalize_before
-        self.concat_after = concat_after
-        if self.concat_after:
-            self.concat = nn.Linear((size + size), size)
-
-    def forward(self, tgt, tgt_mask, cache=None):
-        """Compute decoded features.
+    def forward(
+        self,
+        sequence: torch.Tensor,
+        mask: torch.Tensor,
+        cache: Optional[torch.Tensor] = None,
+    ):
+        """Compute previous decoder output sequences.
 
         Args:
-            x (torch.Tensor): decoded previous target features (B, Lmax, idim)
-            mask (torch.Tensor): mask for x (batch, Lmax)
-            cache (torch.Tensor): cached output (B, Lmax-1, idim)
+            sequence: Transformer input sequences. (B, U, D_dec)
+            mask: Transformer intput mask sequences. (B, U)
+            cache: Cached decoder output sequences. (B, (U - 1), D_dec)
+
+        Returns:
+            sequence: Transformer output sequences. (B, U, D_dec)
+            mask: Transformer output mask sequences. (B, U)
 
         """
-        residual = tgt
-        if self.normalize_before:
-            tgt = self.norm1(tgt)
+        residual = sequence
+        sequence = self.norm1(sequence)
 
         if cache is None:
-            tgt_q = tgt
+            sequence_q = sequence
         else:
+            batch = sequence.shape[0]
+            prev_len = sequence.shape[1] - 1
+
             assert cache.shape == (
-                tgt.shape[0],
-                tgt.shape[1] - 1,
-                self.size,
-            ), f"{cache.shape} == {(tgt.shape[0], tgt.shape[1] - 1, self.size)}"
+                batch,
+                prev_len,
+                self.hdim,
+            ), f"{cache.shape} == {(batch, prev_len, self.hdim)}"
 
-            tgt_q = tgt[:, -1, :]
-            residual = residual[:, -1, :]
+            sequence_q = sequence[:, -1:, :]
+            residual = residual[:, -1:, :]
 
-            if tgt_mask is not None:
-                tgt_mask = tgt_mask[:, -1:, :]
+            if mask is not None:
+                mask = mask[:, -1:, :]
 
-        if self.concat_after:
-            tgt_concat = torch.cat(
-                (tgt_q, self.self_attn(tgt_q, tgt, tgt, tgt_mask)), dim=-1
-            )
-            tgt = residual + self.concat(tgt_concat)
-        else:
-            tgt = residual + self.dropout(self.self_attn(tgt_q, tgt, tgt, tgt_mask))
-        if not self.normalize_before:
-            tgt = self.norm1(tgt)
+        sequence = residual + self.dropout(
+            self.self_attention(sequence_q, sequence, sequence, mask)
+        )
 
-        residual = tgt
-        if self.normalize_before:
-            tgt = self.norm2(tgt)
+        residual = sequence
+        sequence = self.norm2(sequence)
 
-        tgt = residual + self.dropout(self.feed_forward(tgt))
-
-        if not self.normalize_before:
-            tgt = self.norm2(tgt)
+        sequence = residual + self.dropout(self.feed_forward(sequence))
 
         if cache is not None:
-            tgt = torch.cat([cache, tgt], dim=1)
+            sequence = torch.cat([cache, sequence], dim=1)
 
-        return tgt, tgt_mask
+        return sequence, mask

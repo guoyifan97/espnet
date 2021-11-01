@@ -1,4 +1,5 @@
 import argparse
+import copy
 import logging
 from typing import Callable
 from typing import Collection
@@ -20,21 +21,20 @@ from espnet2.asr.encoder.abs_encoder import AbsEncoder
 from espnet2.asr.encoder.rnn_encoder import RNNEncoder
 from espnet2.asr.encoder.transformer_encoder import TransformerEncoder
 from espnet2.asr.encoder.vgg_rnn_encoder import VGGRNNEncoder
-from espnet2.asr.espnet_joint_model import ESPnetEnhASRModel
+from espnet2.asr.espnet_enh_asr_model import ESPnetEnhASRModel
 from espnet2.asr.espnet_model import ESPnetASRModel
 from espnet2.asr.frontend.abs_frontend import AbsFrontend
 from espnet2.asr.frontend.default import DefaultFrontend
 from espnet2.asr.specaug.abs_specaug import AbsSpecAug
 from espnet2.asr.specaug.specaug import SpecAug
-from espnet2.enh.abs_enh import AbsEnhancement
 from espnet2.enh.espnet_model import ESPnetEnhancementModel
-from espnet2.enh.nets.beamformer_net import BeamformerNet
-from espnet2.enh.nets.tasnet import TasNet
-from espnet2.enh.nets.tf_mask_net import TFMaskingNet
 from espnet2.layers.abs_normalize import AbsNormalize
 from espnet2.layers.global_mvn import GlobalMVN
 from espnet2.layers.utterance_mvn import UtteranceMVN
 from espnet2.tasks.abs_task import AbsTask
+from espnet2.tasks.enh import decoder_choices as enh_decoder_choices_
+from espnet2.tasks.enh import encoder_choices as enh_encoder_choices_
+from espnet2.tasks.enh import separator_choices as enh_separator_choices_
 from espnet2.text.phoneme_tokenizer import g2p_choices
 from espnet2.torch_utils.initialize import initialize
 from espnet2.train.class_choices import ClassChoices
@@ -46,13 +46,21 @@ from espnet2.utils.nested_dict_action import NestedDictAction
 from espnet2.utils.types import int_or_none
 from espnet2.utils.types import str2bool
 from espnet2.utils.types import str_or_none
-
-enh_choices = ClassChoices(
-    name="enh",
-    classes=dict(tf_masking=TFMaskingNet, tasnet=TasNet, wpe_beamformer=BeamformerNet),
-    type_check=AbsEnhancement,
-    default="tf_masking",
+from espnet2.asr.postencoder.abs_postencoder import AbsPostEncoder
+from espnet2.asr.postencoder.hugging_face_transformers_postencoder import (
+    HuggingFaceTransformersPostEncoder,  # noqa: H301
 )
+
+
+# copy the choices from enh task to keep the choices consistent
+# rename with "enh" prefix to avoid conficts with asr encoder/decoder
+enh_encoder_choices = copy.deepcopy(enh_encoder_choices_)
+enh_encoder_choices.name = "enh_encoder"
+enh_decoder_choices = copy.deepcopy(enh_decoder_choices_)
+enh_decoder_choices.name = "enh_decoder"
+enh_separator_choices = copy.deepcopy(enh_separator_choices_)
+enh_separator_choices.name = "enh_separator"
+
 frontend_choices = ClassChoices(
     name="frontend",
     classes=dict(default=DefaultFrontend),
@@ -86,6 +94,15 @@ encoder_choices = ClassChoices(
     type_check=AbsEncoder,
     default="rnn",
 )
+postencoder_choices = ClassChoices(
+    name="postencoder",
+    classes=dict(
+        hugging_face_transformers=HuggingFaceTransformersPostEncoder,
+    ),
+    type_check=AbsPostEncoder,
+    default=None,
+    optional=True,
+)
 decoder_choices = ClassChoices(
     "decoder",
     classes=dict(transformer=TransformerDecoder, rnn=RNNDecoder),
@@ -96,14 +113,18 @@ decoder_choices = ClassChoices(
 MAX_REFERENCE_NUM = 100
 
 
-class ASRTask(AbsTask):
+class EnhASRTask(AbsTask):
     # If you need more than one optimizers, change this value
     num_optimizers: int = 1
 
     # Add variable objects configurations
     class_choices_list = [
-        # --enh and --enh_conf
-        enh_choices,
+        # --enh_encoder and --enh_encoder_conf
+        enh_encoder_choices,
+        # --enh_separator and --enh_separator_conf
+        enh_separator_choices,
+        # --enh_decoder and --enh_decoder_conf
+        enh_decoder_choices,
         # --frontend and --frontend_conf
         frontend_choices,
         # --specaug and --specaug_conf
@@ -112,6 +133,8 @@ class ASRTask(AbsTask):
         normalize_choices,
         # --encoder and --encoder_conf
         encoder_choices,
+        # --postencoder and --postencoder_conf
+        postencoder_choices,
         # --decoder and --decoder_conf
         decoder_choices,
     ]
@@ -127,7 +150,18 @@ class ASRTask(AbsTask):
         # to provide --print_config mode. Instead of it, do as
         required = parser.get_default("required")
         required += ["token_list"]
-
+        group.add_argument(
+            "--enh_model_conf",
+            action=NestedDictAction,
+            default=get_default_kwargs(ESPnetEnhancementModel),
+            help="The keyword arguments for enh model class.",
+        )
+        group.add_argument(
+            "--use_enh_model",
+            type=str2bool,
+            default=True,
+            help="Apply preprocessing to data or not",
+        )
         group.add_argument(
             "--token_list",
             type=str_or_none,
@@ -166,14 +200,14 @@ class ASRTask(AbsTask):
             "--asr_model_conf",
             action=NestedDictAction,
             default=get_default_kwargs(ESPnetASRModel),
-            help="The keyword arguments for model class.",
+            help="The keyword arguments for ASR model class.",
         )
 
         group.add_argument(
-            "--enh_model_conf",
+            "--joint_model_conf",
             action=NestedDictAction,
-            default=get_default_kwargs(ESPnetEnhancementModel),
-            help="The keyword arguments for model class.",
+            default=get_default_kwargs(ESPnetEnhASRModel),
+            help="The keyword arguments for joint Enh and ASR model class.",
         )
 
         group = parser.add_argument_group(description="Preprocess related")
@@ -237,8 +271,9 @@ class ASRTask(AbsTask):
         cls, args: argparse.Namespace, train: bool
     ) -> Optional[Callable[[str, Dict[str, np.array]], Dict[str, np.ndarray]]]:
         assert check_argument_types()
-        # TODO(Jing): ask Kamo if it ok to support several args,
-        # like text_name = 'text_ref1' and 'text_ref2'
+        # Note(Jing): write the CommonPreprocessor_multi for multi args,
+        # e.g., text_name = ["text_ref1" , "text_ref2"]
+        # TODO(Jing): variable number of text_ref
         if args.use_preprocessor:
             retval = CommonPreprocessor_multi(
                 train=train,
@@ -260,7 +295,7 @@ class ASRTask(AbsTask):
         cls, train: bool = True, inference: bool = False
     ) -> Tuple[str, ...]:
         if not inference:
-            retval = ("speech_mix", "speech_ref1", "text_ref1")
+            retval = ("speech_mix", "text_ref1")
         else:
             # Recognition mode
             retval = ("speech_mix",)
@@ -270,10 +305,16 @@ class ASRTask(AbsTask):
     def optional_data_names(
         cls, train: bool = True, inference: bool = False
     ) -> Tuple[str, ...]:
-        retval = ["dereverb_ref"]
-        retval += ["speech_ref{}".format(n) for n in range(2, MAX_REFERENCE_NUM + 1)]
-        retval += ["text_ref{}".format(n) for n in range(2, MAX_REFERENCE_NUM + 1)]
-        retval += ["noise_ref{}".format(n) for n in range(1, MAX_REFERENCE_NUM + 1)]
+        if not inference:
+            retval = ["speech_ref{}".format(n) for n in range(1, MAX_REFERENCE_NUM + 1)]
+            retval += ["text_ref{}".format(n) for n in range(2, MAX_REFERENCE_NUM + 1)]
+            retval += ["noise_ref{}".format(n) for n in range(1, MAX_REFERENCE_NUM + 1)]
+            retval += ["utt2category"]
+            retval += [
+                "dereverb_ref{}".format(n) for n in range(1, MAX_REFERENCE_NUM + 1)
+            ]
+        else:
+            retval = ["speech_ref{}".format(n) for n in range(1, MAX_REFERENCE_NUM + 1)]
         retval = tuple(retval)
         assert check_return_type(retval)
         return retval
@@ -295,8 +336,23 @@ class ASRTask(AbsTask):
         logging.info(f"Vocabulary size: {vocab_size }")
 
         # 0. Build pre enhancement model
-        enh_model = enh_choices.get_class(args.enh)(**args.enh_conf)
+        enh_encoder = enh_encoder_choices.get_class(args.enh_encoder)(
+            **args.enh_encoder_conf
+        )
+        enh_separator = enh_separator_choices.get_class(args.enh_separator)(
+            enh_encoder.output_dim, **args.enh_separator_conf
+        )
+        enh_decoder = enh_decoder_choices.get_class(args.enh_decoder)(
+            **args.enh_decoder_conf
+        )
+        enh_model = ESPnetEnhancementModel(
+            encoder=enh_encoder,
+            decoder=enh_decoder,
+            separator=enh_separator,
+            **args.enh_model_conf,
+        )
 
+        # Step 1-7 follows the asr.py to build asr_model.
         # 1. frontend
         if args.input_size is None:
             # Extract features in the model
@@ -324,11 +380,26 @@ class ASRTask(AbsTask):
         else:
             normalize = None
 
-        # 4. Encoder
+        # 4. PreEncoder (Not implemented)
+        pre_encoder = None
+
+        # 5. Encoder
         encoder_class = encoder_choices.get_class(args.encoder)
         encoder = encoder_class(input_size=input_size, **args.encoder_conf)
 
-        # 5. Decoder
+        # 5.5 Post-encoder block
+        # NOTE(kan-bayashi): Use getattr to keep the compatibility
+        encoder_output_size = encoder.output_size()
+        if getattr(args, "postencoder", None) is not None:
+            postencoder_class = postencoder_choices.get_class(args.postencoder)
+            postencoder = postencoder_class(
+                input_size=encoder_output_size, **args.postencoder_conf
+            )
+            encoder_output_size = postencoder.output_size()
+        else:
+            postencoder = None
+
+        # 6. Decoder
         decoder_class = decoder_choices.get_class(args.decoder)
 
         decoder = decoder_class(
@@ -337,27 +408,33 @@ class ASRTask(AbsTask):
             **args.decoder_conf,
         )
 
-        # 6. CTC
+        # 7. CTC
         ctc = CTC(
             odim=vocab_size, encoder_output_sizse=encoder.output_size(), **args.ctc_conf
         )
 
-        # 7. RNN-T Decoder (Not implemented)
+        # 8. RNN-T Decoder (Not implemented)
         rnnt_decoder = None
 
-        # 8. Build model
-        model = ESPnetEnhASRModel(
+        asr_model = ESPnetASRModel(
             vocab_size=vocab_size,
-            enh=enh_model,
             frontend=frontend,
             specaug=specaug,
             normalize=normalize,
+            preencoder=pre_encoder,
             encoder=encoder,
+            postencoder=postencoder,
             decoder=decoder,
             ctc=ctc,
             rnnt_decoder=rnnt_decoder,
             token_list=token_list,
             **args.asr_model_conf,
+        )
+        # 8. Build model
+        model = ESPnetEnhASRModel(
+            enh_model=enh_model,
+            asr_model=asr_model,
+            **args.joint_model_conf,
         )
 
         # FIXME(kamo): Should be done in model?

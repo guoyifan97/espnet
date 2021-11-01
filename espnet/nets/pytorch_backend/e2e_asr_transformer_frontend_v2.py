@@ -26,7 +26,10 @@ from espnet.nets.pytorch_backend.nets_utils import make_non_pad_mask
 from espnet.nets.pytorch_backend.nets_utils import th_accuracy
 from espnet.nets.pytorch_backend.rnn.decoders import CTC_SCORING_RATIO
 from espnet.nets.pytorch_backend.transformer.add_sos_eos import add_sos_eos
-from espnet.nets.pytorch_backend.transformer.add_sos_eos import mask_uniform
+# from espnet.nets.pytorch_backend.transformer.add_sos_eos import mask_uniform
+from espnet.nets.pytorch_backend.transformer.argument import (
+    add_arguments_transformer_common,  # noqa: H301
+)
 from espnet.nets.pytorch_backend.transformer.attention import (
     MultiHeadedAttention,  # noqa: H301
     RelPositionMultiHeadedAttention,  # noqa: H301
@@ -135,168 +138,174 @@ class E2E(ASRInterface, torch.nn.Module):
         """Add arguments."""
         group = parser.add_argument_group("transformer model setting")
 
-        group.add_argument(
-            "--transformer-init",
-            type=str,
-            default="pytorch",
-            choices=[
-                "pytorch",
-                "xavier_uniform",
-                "xavier_normal",
-                "kaiming_uniform",
-                "kaiming_normal",
-            ],
-            help="how to initialize transformer parameters",
-        )
-        group.add_argument(
-            "--transformer-input-layer",
-            type=str,
-            default="conv2d",
-            choices=["conv2d", "linear", "embed", "vgg2l"],
-            help="transformer input layer type",
-        )
-        group.add_argument(
-            "--transformer-attn-dropout-rate",
-            default=None,
-            type=float,
-            help="dropout in transformer attention. use --dropout-rate if None is set",
-        )
-        group.add_argument(
-            "--transformer-lr",
-            default=10.0,
-            type=float,
-            help="Initial value of learning rate",
-        )
-        group.add_argument(
-            "--transformer-warmup-steps",
-            default=25000,
-            type=int,
-            help="optimizer warmup steps",
-        )
-        group.add_argument(
-            "--transformer-length-normalized-loss",
-            default=True,
-            type=strtobool,
-            help="normalize loss by length",
-        )
-        group.add_argument(
-            "--transformer-encoder-selfattn-layer-type",
-            type=str,
-            default="selfattn",
-            choices=[
-                "selfattn",
-                "rel_selfattn",
-                "lightconv",
-                "lightconv2d",
-                "dynamicconv",
-                "dynamicconv2d",
-                "light-dynamicconv2d",
-            ],
-            help="transformer encoder self-attention layer type",
-        )
-        group.add_argument(
-            "--transformer-decoder-selfattn-layer-type",
-            type=str,
-            default="selfattn",
-            choices=[
-                "selfattn",
-                "lightconv",
-                "lightconv2d",
-                "dynamicconv",
-                "dynamicconv2d",
-                "light-dynamicconv2d",
-            ],
-            help="transformer decoder self-attention layer type",
-        )
-        # Lightweight/Dynamic convolution related parameters.
-        # See https://arxiv.org/abs/1912.11793v2
-        # and https://arxiv.org/abs/1901.10430 for detail of the method.
-        # Configurations used in the first paper are in
-        # egs/{csj, librispeech}/asr1/conf/tuning/ld_conv/
-        group.add_argument(
-            "--wshare",
-            default=4,
-            type=int,
-            help="Number of parameter shargin for lightweight convolution",
-        )
-        group.add_argument(
-            "--ldconv-encoder-kernel-length",
-            default="21_23_25_27_29_31_33_35_37_39_41_43",
-            type=str,
-            help="kernel size for lightweight/dynamic convolution: "
-            'Encoder side. For example, "21_23_25" means kernel length 21 for '
-            "First layer, 23 for Second layer and so on.",
-        )
-        group.add_argument(
-            "--ldconv-decoder-kernel-length",
-            default="11_13_15_17_19_21",
-            type=str,
-            help="kernel size for lightweight/dynamic convolution: "
-            'Decoder side. For example, "21_23_25" means kernel length 21 for '
-            "First layer, 23 for Second layer and so on.",
-        )
-        group.add_argument(
-            "--ldconv-usebias",
-            type=strtobool,
-            default=False,
-            help="use bias term in lightweight/dynamic convolution",
-        )
-        group.add_argument(
-            "--dropout-rate",
-            default=0.0,
-            type=float,
-            help="Dropout rate for the encoder",
-        )
-        # Encoder
-        group.add_argument(
-            "--elayers",
-            default=4,
-            type=int,
-            help="Number of encoder layers (for shared recognition part "
-            "in multi-speaker asr mode)",
-        )
-        group.add_argument(
-            "--eunits",
-            "-u",
-            default=300,
-            type=int,
-            help="Number of encoder hidden units",
-        )
-        # Attention
-        group.add_argument(
-            "--adim",
-            default=320,
-            type=int,
-            help="Number of attention transformation dimensions",
-        )
-        group.add_argument(
-            "--aheads",
-            default=4,
-            type=int,
-            help="Number of heads for multi head attention",
-        )
-        # Decoder
-        group.add_argument(
-            "--dlayers", default=1, type=int, help="Number of decoder layers"
-        )
-        group.add_argument(
-            "--dunits", default=320, type=int, help="Number of decoder hidden units"
-        )
-        # Non-autoregressive training
-        group.add_argument(
-            "--decoder-mode",
-            default="AR",
-            type=str,
-            choices=["ar", "maskctc"],
-            help="AR: standard autoregressive training, "
-            "maskctc: non-autoregressive training based on Mask CTC",
-        )
+        group = add_arguments_transformer_common(group)
+        # group.add_argument(
+        #     "--transformer-init",
+        #     type=str,
+        #     default="pytorch",
+        #     choices=[
+        #         "pytorch",
+        #         "xavier_uniform",
+        #         "xavier_normal",
+        #         "kaiming_uniform",
+        #         "kaiming_normal",
+        #     ],
+        #     help="how to initialize transformer parameters",
+        # )
+        # group.add_argument(
+        #     "--transformer-input-layer",
+        #     type=str,
+        #     default="conv2d",
+        #     choices=["conv2d", "linear", "embed", "vgg2l"],
+        #     help="transformer input layer type",
+        # )
+        # group.add_argument(
+        #     "--transformer-attn-dropout-rate",
+        #     default=None,
+        #     type=float,
+        #     help="dropout in transformer attention. use --dropout-rate if None is set",
+        # )
+        # group.add_argument(
+        #     "--transformer-lr",
+        #     default=10.0,
+        #     type=float,
+        #     help="Initial value of learning rate",
+        # )
+        # group.add_argument(
+        #     "--transformer-warmup-steps",
+        #     default=25000,
+        #     type=int,
+        #     help="optimizer warmup steps",
+        # )
+        # group.add_argument(
+        #     "--transformer-length-normalized-loss",
+        #     default=True,
+        #     type=strtobool,
+        #     help="normalize loss by length",
+        # )
+        # group.add_argument(
+        #     "--transformer-encoder-selfattn-layer-type",
+        #     type=str,
+        #     default="selfattn",
+        #     choices=[
+        #         "selfattn",
+        #         "rel_selfattn",
+        #         "lightconv",
+        #         "lightconv2d",
+        #         "dynamicconv",
+        #         "dynamicconv2d",
+        #         "light-dynamicconv2d",
+        #     ],
+        #     help="transformer encoder self-attention layer type",
+        # )
+        # group.add_argument(
+        #     "--transformer-decoder-selfattn-layer-type",
+        #     type=str,
+        #     default="selfattn",
+        #     choices=[
+        #         "selfattn",
+        #         "lightconv",
+        #         "lightconv2d",
+        #         "dynamicconv",
+        #         "dynamicconv2d",
+        #         "light-dynamicconv2d",
+        #     ],
+        #     help="transformer decoder self-attention layer type",
+        # )
+        # # Lightweight/Dynamic convolution related parameters.
+        # # See https://arxiv.org/abs/1912.11793v2
+        # # and https://arxiv.org/abs/1901.10430 for detail of the method.
+        # # Configurations used in the first paper are in
+        # # egs/{csj, librispeech}/asr1/conf/tuning/ld_conv/
+        # group.add_argument(
+        #     "--wshare",
+        #     default=4,
+        #     type=int,
+        #     help="Number of parameter shargin for lightweight convolution",
+        # )
+        # group.add_argument(
+        #     "--ldconv-encoder-kernel-length",
+        #     default="21_23_25_27_29_31_33_35_37_39_41_43",
+        #     type=str,
+        #     help="kernel size for lightweight/dynamic convolution: "
+        #     'Encoder side. For example, "21_23_25" means kernel length 21 for '
+        #     "First layer, 23 for Second layer and so on.",
+        # )
+        # group.add_argument(
+        #     "--ldconv-decoder-kernel-length",
+        #     default="11_13_15_17_19_21",
+        #     type=str,
+        #     help="kernel size for lightweight/dynamic convolution: "
+        #     'Decoder side. For example, "21_23_25" means kernel length 21 for '
+        #     "First layer, 23 for Second layer and so on.",
+        # )
+        # group.add_argument(
+        #     "--ldconv-usebias",
+        #     type=strtobool,
+        #     default=False,
+        #     help="use bias term in lightweight/dynamic convolution",
+        # )
+        # group.add_argument(
+        #     "--dropout-rate",
+        #     default=0.0,
+        #     type=float,
+        #     help="Dropout rate for the encoder",
+        # )
+        # # Encoder
+        # group.add_argument(
+        #     "--elayers",
+        #     default=4,
+        #     type=int,
+        #     help="Number of encoder layers (for shared recognition part "
+        #     "in multi-speaker asr mode)",
+        # )
+        # group.add_argument(
+        #     "--eunits",
+        #     "-u",
+        #     default=300,
+        #     type=int,
+        #     help="Number of encoder hidden units",
+        # )
+        # # Attention
+        # group.add_argument(
+        #     "--adim",
+        #     default=320,
+        #     type=int,
+        #     help="Number of attention transformation dimensions",
+        # )
+        # group.add_argument(
+        #     "--aheads",
+        #     default=4,
+        #     type=int,
+        #     help="Number of heads for multi head attention",
+        # )
+        # # Decoder
+        # group.add_argument(
+        #     "--dlayers", default=1, type=int, help="Number of decoder layers"
+        # )
+        # group.add_argument(
+        #     "--dunits", default=320, type=int, help="Number of decoder hidden units"
+        # )
+        # # Non-autoregressive training
+        # group.add_argument(
+        #     "--decoder-mode",
+        #     default="AR",
+        #     type=str,
+        #     choices=["ar", "maskctc"],
+        #     help="AR: standard autoregressive training, "
+        #     "maskctc: non-autoregressive training based on Mask CTC",
+        # )
         return parser
 
     @property
     def attention_plot_class(self):
         """Return PlotAttentionReport."""
         return PlotAttentionReport
+    
+    def get_total_subsampling_factor(self):
+        """Get total subsampling factor."""
+        return self.encoder.conv_subsampling_factor * int(numpy.prod(self.subsample))
+
 
     def __init__(self, idim, odim, args, ignore_id=-1):
         """Construct an E2E object.
@@ -363,6 +372,13 @@ class E2E(ASRInterface, torch.nn.Module):
 
         if args.transformer_attn_dropout_rate is None:
             args.transformer_attn_dropout_rate = args.dropout_rate
+        self.intermediate_ctc_weight = args.intermediate_ctc_weight
+        self.intermediate_ctc_layers = []
+        if args.intermediate_ctc_layer != "":
+            self.intermediate_ctc_layers = [
+                int(i) for i in args.intermediate_ctc_layer.split(",")
+            ]
+
         self.encoder = Encoder(
             idim=idim,
             selfattention_layer_type=args.transformer_encoder_selfattn_layer_type,
@@ -377,6 +393,8 @@ class E2E(ASRInterface, torch.nn.Module):
             dropout_rate=args.dropout_rate,
             positional_dropout_rate=args.dropout_rate,
             attention_dropout_rate=args.transformer_attn_dropout_rate,
+            stochastic_depth_rate=args.stochastic_depth_rate,
+            intermediate_layers=self.intermediate_ctc_layers,
         )
         if args.mtlalpha < 1:
             self.decoder = Decoder(
@@ -404,14 +422,14 @@ class E2E(ASRInterface, torch.nn.Module):
             self.decoder = None
             self.criterion = None
         self.blank = 0
-        self.decoder_mode = args.decoder_mode
-        if self.decoder_mode == "maskctc":
-            self.mask_token = odim - 1
-            self.sos = odim - 2
-            self.eos = odim - 2
-        else:
-            self.sos = odim - 1
-            self.eos = odim - 1
+        # self.decoder_mode = args.decoder_mode
+        # if self.decoder_mode == "maskctc":
+        #     self.mask_token = odim - 1
+        #     self.sos = odim - 2
+        #     self.eos = odim - 2
+        # else:
+        self.sos = odim - 1
+        self.eos = odim - 1
         self.odim = odim
         self.ignore_id = ignore_id
         self.subsample = get_subsample(args, mode="asr", arch="transformer")
@@ -516,7 +534,7 @@ class E2E(ASRInterface, torch.nn.Module):
         #     else:    
         #         frontend_loss = self.frontend_ctc(hs_pad.view(hs_pad.size(0), -1, self.idim), hlens, ys_pad_phone)
 
-        hs_pad, hs_mask = self.encoder(hs_pad, src_mask)
+        hs_pad, hs_mask, hs_intermediates = self.encoder(hs_pad, src_mask)
 
         del src_mask
 
@@ -525,17 +543,17 @@ class E2E(ASRInterface, torch.nn.Module):
 
         # 2. forward decoder
         if self.decoder is not None:
-            if self.decoder_mode == "maskctc":
-                ys_in_pad, ys_out_pad = mask_uniform(
-                    ys_pad, self.mask_token, self.eos, self.ignore_id
-                )
-                ys_mask = (ys_in_pad != self.ignore_id).unsqueeze(-2)
+            # if self.decoder_mode == "maskctc":
+            #     ys_in_pad, ys_out_pad = mask_uniform(
+            #         ys_pad, self.mask_token, self.eos, self.ignore_id
+            #     )
+            #     ys_mask = (ys_in_pad != self.ignore_id).unsqueeze(-2)
                 
-            else:
-                ys_in_pad, ys_out_pad = add_sos_eos(
-                    ys_pad, self.sos, self.eos, self.ignore_id
-                )
-                ys_mask = target_mask(ys_in_pad, self.ignore_id)
+            # else:
+            ys_in_pad, ys_out_pad = add_sos_eos(
+                ys_pad, self.sos, self.eos, self.ignore_id
+            )
+            ys_mask = target_mask(ys_in_pad, self.ignore_id)
                 
 
             pred_pad, pred_mask = self.decoder(ys_in_pad, ys_mask, hs_pad, hs_mask)
@@ -558,6 +576,7 @@ class E2E(ASRInterface, torch.nn.Module):
         # TODO(karita) show predicted text
         # TODO(karita) calculate these stats
         cer_ctc = None
+        loss_intermediate_ctc = 0.0
         if self.mtlalpha == 0.0:
             loss_ctc = None
         else:
@@ -576,6 +595,15 @@ class E2E(ASRInterface, torch.nn.Module):
             # for visualization
             if not self.training:
                 self.ctc.softmax(hs_pad)
+            if self.intermediate_ctc_weight > 0 and self.intermediate_ctc_layers:
+                for hs_intermediate in hs_intermediates:
+                    # assuming hs_intermediates and hs_pad has same length / padding
+                    loss_inter = self.ctc(
+                        hs_intermediate.view(batch_size, -1, self.adim), hs_len, ys_pad
+                    )
+                    loss_intermediate_ctc += loss_inter
+
+                loss_intermediate_ctc /= len(self.intermediate_ctc_layers)
 
         del hs_pad
 
@@ -596,10 +624,20 @@ class E2E(ASRInterface, torch.nn.Module):
             loss_ctc_data = None
         elif alpha == 1:
             self.loss = loss_ctc
+            if self.intermediate_ctc_weight > 0:
+                self.loss = (
+                    1 - self.intermediate_ctc_weight
+                ) * loss_ctc + self.intermediate_ctc_weight * loss_intermediate_ctc
             loss_att_data = None
             loss_ctc_data = float(loss_ctc)
         else:
             self.loss = alpha * loss_ctc + (1 - alpha) * loss_att
+            if self.intermediate_ctc_weight > 0:
+                self.loss = (
+                    (1 - alpha - self.intermediate_ctc_weight) * loss_att
+                    + alpha * loss_ctc
+                    + self.intermediate_ctc_weight * loss_intermediate_ctc
+                )
             loss_att_data = float(loss_att)
             loss_ctc_data = float(loss_ctc)
             del loss_att, loss_ctc
@@ -654,13 +692,14 @@ class E2E(ASRInterface, torch.nn.Module):
 
         x = to_torch_tensor(x).unsqueeze(0)
         
-        if not (self.use_complex_beamformer or self.use_universal_beamformer):
-            ilens = [x.shape[1]]
-        else:
-            # 1 TxC F -> 1 T C F -> 1 C T F
-            ilens = [x.shape[1]]
-            if len(x.shape) == 4:
-                x = x.transpose(1,2).contiguous()
+        # if not (self.use_complex_beamformer or self.use_universal_beamformer):
+        #     ilens = [x.shape[1]]
+        # else:
+        #     # 1 TxC F -> 1 T C F -> 1 C T F
+        #     ilens = [x.shape[1]]
+        #     if len(x.shape) == 4:
+        #         x = x.transpose(1,2).contiguous()
+        ilens = [x.shape[1]]
 
         # GUO added
         if self.frontend is not None:
@@ -675,7 +714,7 @@ class E2E(ASRInterface, torch.nn.Module):
             hs, hlens = x, ilens
 
         # GUO
-        enc_output, _ = self.encoder(hs, None)
+        enc_output, _, _ = self.encoder(hs, None)
         # enc_output, _ = self.encoder(x, None)
 
 
@@ -727,7 +766,7 @@ class E2E(ASRInterface, torch.nn.Module):
             lpz = self.ctc.argmax(enc_output)
             collapsed_indices = [x[0] for x in groupby(lpz[0])]
             hyp = [x for x in filter(lambda x: x != self.blank, collapsed_indices)]
-            nbest_hyps = [{"score": 0.0, "yseq": hyp}]
+            nbest_hyps = [{"score": 0.0, "yseq": [self.sos] + hyp}]
             if recog_args.beam_size > 1:
                 raise NotImplementedError("Pure CTC beam search is not implemented.")
             # TODO(hirofumi0810): Implement beam search
@@ -863,7 +902,7 @@ class E2E(ASRInterface, torch.nn.Module):
 
             # add eos in the final loop to avoid that there are no ended hyps
             if i == maxlen - 1:
-                logging.info("adding <eos> in the last postion in the loop")
+                logging.info("adding <eos> in the last position in the loop")
                 for hyp in hyps:
                     hyp["yseq"].append(self.eos)
 

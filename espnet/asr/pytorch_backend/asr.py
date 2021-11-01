@@ -1,12 +1,10 @@
-#!/usr/bin/env python3
-# encoding: utf-8
-
 # Copyright 2017 Johns Hopkins University (Shinji Watanabe)
 #  Apache 2.0  (http://www.apache.org/licenses/LICENSE-2.0)
 
 """Training/decoding definition for the speech recognition task."""
 
 import copy
+import itertools
 import json
 import logging
 import math
@@ -39,6 +37,7 @@ from espnet.asr.pytorch_backend.asr_init import load_trained_model
 from espnet.asr.pytorch_backend.asr_init import load_trained_modules
 import espnet.lm.pytorch_backend.extlm as extlm_pytorch
 from espnet.nets.asr_interface import ASRInterface
+from espnet.nets.beam_search_transducer import BeamSearchTransducer
 from espnet.nets.pytorch_backend.e2e_asr import pad_list
 import espnet.nets.pytorch_backend.lm.default as lm_pytorch
 from espnet.nets.pytorch_backend.streaming.segment import SegmentStreamingE2E
@@ -62,11 +61,6 @@ from espnet.nets.pytorch_backend.nets_utils import pad_list_multichannel
 import matplotlib
 
 matplotlib.use("Agg")
-
-if sys.version_info[0] == 2:
-    from itertools import izip_longest as zip_longest
-else:
-    from itertools import zip_longest as zip_longest
 
 
 def _recursive_to(xs, device):
@@ -267,7 +261,6 @@ class CustomUpdater(StandardUpdater):
                 optimizer.step()
         optimizer.zero_grad()
 
-
     def update(self):
         self.update_core()
         # #iterations with accum_grad > 1
@@ -286,12 +279,11 @@ class CustomConverter(object):
 
     """
 
-    def __init__(self, subsampling_factor=1, dtype=torch.float32, channel_first=False):
+    def __init__(self, subsampling_factor=1, dtype=torch.float32):
         """Construct a CustomConverter object."""
         self.subsampling_factor = subsampling_factor
         self.ignore_id = -1
         self.dtype = dtype
-        self.channel_first = channel_first
 
     def __call__(self, batch, device=torch.device("cpu")):
         """Transform a batch and send it to a device.
@@ -308,31 +300,23 @@ class CustomConverter(object):
         # load_tr(data): ( [[ndarray, ndarray, ...], [ndarray, ndarray, ...], ...], [[ndarray, ndarray, ...], [ndarray, ndarray, ...], ...], ..., [[text, text, ...], [text, text, ...], ...] ) 有tuple不是括号
         assert len(batch) == 1
         xs, ys = batch[0]
-        
+
         # perform subsampling
         if self.subsampling_factor > 1:
             xs = [x[:: self.subsampling_factor, :] for x in xs]
-            
-            
 
         # get batch of lengths of input sequences
         ilens = np.array([x.shape[0] for x in xs])
- 
 
         # perform padding and convert to tensor
         # currently only support real number
         if xs[0].dtype.kind == "c":
-            
             xs_pad_real = pad_list(
                 [torch.from_numpy(x.real).float() for x in xs], 0
             ).to(device, dtype=self.dtype)
             xs_pad_imag = pad_list(
                 [torch.from_numpy(x.imag).float() for x in xs], 0
             ).to(device, dtype=self.dtype)
-
-            if self.channel_first and len(xs_pad_real.shape)==4:
-                xs_pad_real = xs_pad_real.transpose(1,2).contiguous()
-                xs_pad_imag = xs_pad_imag.transpose(1,2).contiguous()
             # Note(kamo):
             # {'real': ..., 'imag': ...} will be changed to ComplexTensor in E2E.
             # Don't create ComplexTensor and give it E2E here
@@ -605,12 +589,12 @@ class CustomConverterMulEnc(object):
 
     """
 
-    def __init__(self, subsamping_factors=[1, 1], dtype=torch.float32):
+    def __init__(self, subsampling_factors=[1, 1], dtype=torch.float32):
         """Initialize the converter."""
-        self.subsamping_factors = subsamping_factors
+        self.subsampling_factors = subsampling_factors
         self.ignore_id = -1
         self.dtype = dtype
-        self.num_encs = len(subsamping_factors)
+        self.num_encs = len(subsampling_factors)
 
     def __call__(self, batch, device=torch.device("cpu")):
         """Transform a batch and send it to a device.
@@ -629,7 +613,7 @@ class CustomConverterMulEnc(object):
         ys = batch[0][-1]
 
         # perform subsampling
-        if np.sum(self.subsamping_factors) > self.num_encs:
+        if np.sum(self.subsampling_factors) > self.num_encs:
             xs_list = [
                 [x[:: self.subsampling_factors[i], :] for x in xs_list[i]]
                 for i in range(self.num_encs)
@@ -687,16 +671,19 @@ def train(args):
         int(valid_json[utts[0]]["input"][i]["shape"][-1]) for i in range(args.num_encs)
     ]
     odim = int(valid_json[utts[0]]["output"][0]["shape"][-1])
-    if hasattr(args, "decoder_mode") and args.decoder_mode == "maskctc":
-        odim += 1  # for the <mask> token
     for i in range(args.num_encs):
         logging.info("stream{}: input dims : {}".format(i + 1, idim_list[i]))
     logging.info("#output dims: " + str(odim))
 
     # specify attention, CTC, hybrid mode
     if "transducer" in args.model_module:
-        assert args.mtlalpha == 1.0
-        mtl_mode = "transducer"
+        if (
+            getattr(args, "etype", False) == "custom"
+            or getattr(args, "dtype", False) == "custom"
+        ):
+            mtl_mode = "custom_transducer"
+        else:
+            mtl_mode = "transducer"
         logging.info("Pure transducer mode")
     elif args.mtlalpha == 1.0:
         mtl_mode = "ctc"
@@ -716,10 +703,11 @@ def train(args):
             idim_list[0] if args.num_encs == 1 else idim_list, odim, args
         )
     assert isinstance(model, ASRInterface)
+    total_subsampling_factor = model.get_total_subsampling_factor()
 
-    logging.warning(
+    logging.info(
         " Total parameter of the model = "
-        + str(sum(p.numel() for p in model.parameters())/1024/1024) + "M"
+        + str(sum(p.numel() for p in model.parameters()))
     )
 
     if args.rnnlm is not None:
@@ -777,7 +765,15 @@ def train(args):
     else:
         model_params = model.parameters()
 
-
+    logging.warning(
+        "num. model params: {:,} (num. trained: {:,} ({:.1f}%))".format(
+            sum(p.numel() for p in model.parameters()),
+            sum(p.numel() for p in model.parameters() if p.requires_grad),
+            sum(p.numel() for p in model.parameters() if p.requires_grad)
+            * 100.0
+            / sum(p.numel() for p in model.parameters()),
+        )
+    )
 
     # Setup an optimizer
     if args.opt == "adadelta":
@@ -788,10 +784,23 @@ def train(args):
         optimizer = torch.optim.Adam(model_params, weight_decay=args.weight_decay)
     elif args.opt == "noam":
         from espnet.nets.pytorch_backend.transformer.optimizer import get_std_opt
-
-        optimizer = get_std_opt(
-            model_params, args.adim, args.transformer_warmup_steps, args.transformer_lr
-        )
+        if "transducer" in mtl_mode:
+            if args.noam_adim > 0:
+                optimizer = get_std_opt(
+                    model_params,
+                    args.noam_adim,
+                    args.optimizer_warmup_steps,
+                    args.noam_lr,
+                )
+            else:
+                raise ValueError("noam-adim option should be set to use Noam scheduler")
+        else:
+            optimizer = get_std_opt(
+                model_params,
+                args.adim,
+                args.transformer_warmup_steps,
+                args.transformer_lr,
+            )
     elif args.opt == "front_back_mix":
         from espnet.nets.pytorch_backend.transformer.optimizer import get_mix_opt
         frontend_params = itertools.chain(model.frontend.parameters(), model.feature_transform.parameters())
@@ -804,6 +813,7 @@ def train(args):
         )
     else:
         raise NotImplementedError("unknown optimizer: " + args.opt)
+        
 
     # setup apex.amp
     if args.train_dtype in ("O0", "O1", "O2", "O3"):
@@ -846,7 +856,7 @@ def train(args):
         if args.cb_use_frontend_ctc:
             converter = CustomConverterComplexFrontendCTC(subsampling_factor=model.subsample[0], dtype=dtype)
         else:
-            converter = CustomConverter(subsampling_factor=model.subsample[0], dtype=dtype, channel_first=(getattr(args,"use_complex_beamformer",False) or getattr(args,"use_universal_beamformer",False)))
+            converter = CustomConverter(subsampling_factor=model.subsample[0], dtype=dtype, )
         # if not args.use_complex_beamformer:
         #     converter = CustomConverter(subsampling_factor=model.subsample[0], dtype=dtype)
         # elif args.cb_use_frontend_ctc:
@@ -969,12 +979,13 @@ def train(args):
             CustomEvaluator(model, {"main": valid_iter}, reporter, device, args.ngpu)
         )
 
-    # Save attention weight at each epoch
+    # Save attention weight each epoch
     is_attn_plot = (
-        mtl_mode in ["att", "mtl"]
-        or "transformer" in args.model_module
+        "transformer" in args.model_module
         or "conformer" in args.model_module
+        or mtl_mode in ["att", "mtl", "custom_transducer"]
     )
+
     if args.num_save_attention > 0 and is_attn_plot:
         data = sorted(
             list(valid_json.items())[: args.num_save_attention],
@@ -994,6 +1005,7 @@ def train(args):
             converter=converter,
             transform=load_cv,
             device=device,
+            subsampling_factor=total_subsampling_factor,
         )
         trainer.extend(att_reporter, trigger=(1, "epoch"))
     else:
@@ -1020,8 +1032,7 @@ def train(args):
             converter=converter,
             transform=load_cv,
             device=device,
-            ikey="output",
-            iaxis=1,
+            subsampling_factor=total_subsampling_factor,
         )
         trainer.extend(ctc_reporter, trigger=(1, "epoch"))
     else:
@@ -1035,21 +1046,74 @@ def train(args):
         report_keys_cer_ctc = [
             "main/cer_ctc{}".format(i + 1) for i in range(model.num_encs)
         ] + ["validation/main/cer_ctc{}".format(i + 1) for i in range(model.num_encs)]
-    trainer.extend(
-        extensions.PlotReport(
-            [
-                "main/loss",
-                "validation/main/loss",
-                "main/loss_ctc",
-                "validation/main/loss_ctc",
-                "main/loss_att",
-                "validation/main/loss_att",
-            ]
-            + ([] if args.num_encs == 1 else report_keys_loss_ctc),
-            "epoch",
-            file_name="loss.png",
+
+    if hasattr(model, "is_transducer"):
+        trans_keys = [
+            "main/loss",
+            "validation/main/loss",
+            "main/loss_trans",
+            "validation/main/loss_trans",
+        ]
+
+        ctc_keys = (
+            ["main/loss_ctc", "validation/main/loss_ctc"] if args.use_ctc_loss else []
         )
-    )
+
+        aux_trans_keys = (
+            [
+                "main/loss_aux_trans",
+                "validation/main/loss_aux_trans",
+            ]
+            if args.use_aux_transducer_loss
+            else []
+        )
+
+        symm_kl_div_keys = (
+            [
+                "main/loss_symm_kl_div",
+                "validation/main/loss_symm_kl_div",
+            ]
+            if args.use_symm_kl_div_loss
+            else []
+        )
+
+        lm_keys = (
+            [
+                "main/loss_lm",
+                "validation/main/loss_lm",
+            ]
+            if args.use_lm_loss
+            else []
+        )
+
+        transducer_keys = (
+            trans_keys + ctc_keys + aux_trans_keys + symm_kl_div_keys + lm_keys
+        )
+
+        trainer.extend(
+            extensions.PlotReport(
+                transducer_keys,
+                "epoch",
+                file_name="loss.png",
+            )
+        )
+    else:
+        trainer.extend(
+            extensions.PlotReport(
+                [
+                    "main/loss",
+                    "validation/main/loss",
+                    "main/loss_ctc",
+                    "validation/main/loss_ctc",
+                    "main/loss_att",
+                    "validation/main/loss_att",
+                ]
+                + ([] if args.num_encs == 1 else report_keys_loss_ctc),
+                "epoch",
+                file_name="loss.png",
+            )
+        )
+
     trainer.extend(
         extensions.PlotReport(
             ["main/acc", "validation/main/acc"], "epoch", file_name="acc.png"
@@ -1069,7 +1133,7 @@ def train(args):
         snapshot_object(model, "model.loss.best"),
         trigger=training.triggers.MinValueTrigger("validation/main/loss"),
     )
-    if mtl_mode not in ["ctc", "transducer"]:
+    if mtl_mode not in ["ctc", "transducer", "custom_transducer"]:
         trainer.extend(
             snapshot_object(model, "model.acc.best"),
             trigger=training.triggers.MaxValueTrigger("validation/main/acc"),
@@ -1081,8 +1145,9 @@ def train(args):
             torch_snapshot(filename="snapshot.iter.{.updater.iteration}"),
             trigger=(args.save_interval_iters, "iteration"),
         )
-    else:
-        trainer.extend(torch_snapshot(), trigger=(1, "epoch"))
+
+    # save snapshot at every epoch - for model averaging
+    trainer.extend(torch_snapshot(), trigger=(1, "epoch"))
 
     # epsilon decay in the optimizer
     if args.opt == "adadelta":
@@ -1137,37 +1202,32 @@ def train(args):
     trainer.extend(
         extensions.LogReport(trigger=(args.report_interval_iters, "iteration"))
     )
-    report_keys = [
-        "epoch",
-        "iteration",
-        "main/loss",
-        "main/loss_ctc",
-        "main/loss_att",
-        "validation/main/loss",
-        "validation/main/loss_ctc",
-        "validation/main/loss_att",
-        "main/acc",
-        "validation/main/acc",
-        "main/cer_ctc",
-        "validation/main/cer_ctc",
-        "elapsed_time",
-    ] + ([] if args.num_encs == 1 else report_keys_cer_ctc + report_keys_loss_ctc)
-    if args.use_complex_beamformer or getattr(args, "use_universal_beamformer", False):
-        if getattr(args,"cb_use_frontend_ctc", False) or getattr(args, "uf_use_abs_pos_pred", False):
-            report_keys += [
-                "main/frontend_loss",
-                "validation/frontend_loss",
+
+    if hasattr(model, "is_transducer"):
+        report_keys = (
+            [
+                "epoch",
+                "iteration",
             ]
-        if getattr(args, "cb_use_dereverb_loss", False):
-            report_keys += [
-                "main/loss_reverb",
-                "validation/loss_reverb",
-            ]
-        if getattr(args, "cb_use_clean_loss", False):
-            report_keys += [
-                "main/loss_clean",
-                "validation/loss_clean",
-            ]
+            + transducer_keys
+            + ["elapsed_time"]
+        )
+    else:
+        report_keys = [
+            "epoch",
+            "iteration",
+            "main/loss",
+            "main/loss_ctc",
+            "main/loss_att",
+            "validation/main/loss",
+            "validation/main/loss_ctc",
+            "validation/main/loss_att",
+            "main/acc",
+            "validation/main/acc",
+            "main/cer_ctc",
+            "validation/main/cer_ctc",
+            "elapsed_time",
+        ] + ([] if args.num_encs == 1 else report_keys_cer_ctc + report_keys_loss_ctc)
 
     if args.opt == "adadelta":
         trainer.extend(
@@ -1214,9 +1274,23 @@ def recog(args):
 
     """
     set_deterministic_pytorch(args)
-    model, train_args = load_trained_model(args.model)
+    model, train_args = load_trained_model(args.model, training=False)
     assert isinstance(model, ASRInterface)
     model.recog_args = args
+
+    if args.quantize_config is not None:
+        q_config = set([getattr(torch.nn, q) for q in args.quantize_config])
+    else:
+        q_config = {torch.nn.Linear}
+
+    if args.quantize_asr_model:
+        assert (
+            "transducer" not in train_args.model_module
+        ), "Quantization of transducer model is not supported yet."
+        logging.info("Use quantized asr model for decoding")
+
+        dtype = getattr(torch, args.quantize_dtype)
+        model = torch.quantization.quantize_dynamic(model, q_config, dtype=dtype)
 
     if args.streaming_mode and "transformer" in train_args.model_module:
         raise NotImplementedError("streaming mode for transformer is not implemented")
@@ -1241,6 +1315,9 @@ def recog(args):
             )
         )
         torch_load(args.rnnlm, rnnlm)
+        if args.quantize_lm_model:
+            dtype = getattr(torch, args.quantize_dtype)
+            rnnlm = torch.quantization.quantize_dynamic(rnnlm, q_config, dtype=dtype)
         rnnlm.eval()
     else:
         rnnlm = None
@@ -1295,6 +1372,32 @@ def recog(args):
         else args.preprocess_conf,
         preprocess_args={"train": False},
     )
+
+    # load transducer beam search
+    if hasattr(model, "is_transducer"):
+        if hasattr(model, "dec"):
+            trans_decoder = model.dec
+        else:
+            trans_decoder = model.decoder
+        joint_network = model.transducer_tasks.joint_network
+
+        beam_search_transducer = BeamSearchTransducer(
+            decoder=trans_decoder,
+            joint_network=joint_network,
+            beam_size=args.beam_size,
+            lm=rnnlm,
+            lm_weight=args.lm_weight,
+            search_type=args.search_type,
+            max_sym_exp=args.max_sym_exp,
+            u_max=args.u_max,
+            nstep=args.nstep,
+            prefix_alpha=args.prefix_alpha,
+            expansion_gamma=args.expansion_gamma,
+            expansion_beta=args.expansion_beta,
+            score_norm=args.score_norm,
+            softmax_temperature=args.softmax_temperature,
+            nbest=args.nbest,
+        )
 
     if args.batchsize == 0:
         with torch.no_grad():
@@ -1357,10 +1460,8 @@ def recog(args):
                             for n in range(args.nbest):
                                 nbest_hyps[n]["yseq"].extend(hyps[n]["yseq"])
                                 nbest_hyps[n]["score"] += hyps[n]["score"]
-                elif hasattr(model, "decoder_mode") and model.decoder_mode == "maskctc":
-                    nbest_hyps = model.recognize_maskctc(
-                        feat, args, train_args.char_list
-                    )
+                elif hasattr(model, "is_transducer"):
+                    nbest_hyps = model.recognize(feat, beam_search_transducer)
                 else:
                     nbest_hyps = model.recognize(
                         feat, args, train_args.char_list, rnnlm
@@ -1373,7 +1474,7 @@ def recog(args):
 
         def grouper(n, iterable, fillvalue=None):
             kargs = [iter(iterable)] * n
-            return zip_longest(*kargs, fillvalue=fillvalue)
+            return itertools.zip_longest(*kargs, fillvalue=fillvalue)
 
         # sort data if batchsize > 1
         keys = list(js.keys())
@@ -1451,10 +1552,10 @@ def enhance(args):
     # read training config
     idim, odim, train_args = get_model_conf(args.model, args.model_conf)
 
-    # TODO(ruizhili): implement enhance for multi-encoder model  #GUO
-    # assert args.num_encs == 1, "number of encoder should be 1 ({} is given)".format(
-    #     args.num_encs
-    # )
+    # TODO(ruizhili): implement enhance for multi-encoder model
+    assert args.num_encs == 1, "number of encoder should be 1 ({} is given)".format(
+        args.num_encs
+    )
 
     # load trained model parameters
     logging.info("reading model parameters from " + args.model)
@@ -1551,7 +1652,7 @@ def enhance(args):
 
     def grouper(n, iterable, fillvalue=None):
         kargs = [iter(iterable)] * n
-        return zip_longest(*kargs, fillvalue=fillvalue)
+        return itertools.zip_longest(*kargs, fillvalue=fillvalue)
 
     num_images = 0
     if not os.path.exists(args.image_dir):
@@ -1637,7 +1738,6 @@ def enhance(args):
                     enh = istft(enh)
                 else:
                     enh = enh
-                
 
                 if args.keep_length:
                     if len(org_feats[idx]) < len(enh):
@@ -1659,88 +1759,3 @@ def enhance(args):
             if num_images >= args.num_images and enh_writer is None:
                 logging.info("Breaking the process.")
                 break
-
-
-def ctc_align(args):
-    """CTC forced alignments with the given args.
-
-    Args:
-        args (namespace): The program arguments.
-    """
-
-    def add_alignment_to_json(js, alignment, char_list):
-        """Add N-best results to json.
-
-        Args:
-            js (dict[str, Any]): Groundtruth utterance dict.
-            alignment (list[int]): List of alignment.
-            char_list (list[str]): List of characters.
-
-        Returns:
-            dict[str, Any]: N-best results added utterance dict.
-
-        """
-        # copy old json info
-        new_js = dict()
-        new_js["ctc_alignment"] = []
-
-        alignment_tokens = []
-        for idx, a in enumerate(alignment):
-            alignment_tokens.append(char_list[a])
-        alignment_tokens = " ".join(alignment_tokens)
-
-        new_js["ctc_alignment"] = alignment_tokens
-
-        return new_js
-
-    set_deterministic_pytorch(args)
-    model, train_args = load_trained_model(args.model)
-    assert isinstance(model, ASRInterface)
-    model.eval()
-
-    load_inputs_and_targets = LoadInputsAndTargets(
-        mode="asr",
-        load_output=True,
-        sort_in_input_length=False,
-        preprocess_conf=train_args.preprocess_conf
-        if args.preprocess_conf is None
-        else args.preprocess_conf,
-        preprocess_args={"train": False},
-    )
-
-    if args.ngpu > 1:
-        raise NotImplementedError("only single GPU decoding is supported")
-    if args.ngpu == 1:
-        device = "cuda"
-    else:
-        device = "cpu"
-    dtype = getattr(torch, args.dtype)
-    logging.info(f"Decoding device={device}, dtype={dtype}")
-    model.to(device=device, dtype=dtype).eval()
-
-    # read json data
-    with open(args.align_json, "rb") as f:
-        js = json.load(f)["utts"]
-    new_js = {}
-    if args.batchsize == 0:
-        with torch.no_grad():
-            for idx, name in enumerate(js.keys(), 1):
-                logging.info("(%d/%d) aligning " + name, idx, len(js.keys()))
-                batch = [(name, js[name])]
-                feat, label = load_inputs_and_targets(batch)
-                feat = feat[0]
-                label = label[0]
-                enc = model.encode(torch.as_tensor(feat).to(device)).unsqueeze(0)
-                alignment = model.ctc.forced_align(enc, label)
-                new_js[name] = add_alignment_to_json(
-                    js[name], alignment, train_args.char_list
-                )
-    else:
-        raise NotImplementedError("Align_batch is not implemented.")
-
-    with open(args.result_label, "wb") as f:
-        f.write(
-            json.dumps(
-                {"utts": new_js}, indent=4, ensure_ascii=False, sort_keys=True
-            ).encode("utf_8")
-        )

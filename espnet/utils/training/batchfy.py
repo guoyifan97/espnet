@@ -48,8 +48,6 @@ def batchfy_by_seq(
     minibatches = []
     start = 0
     while True:
-        # [('7601-291468-0006_0', {'category': 'multichannel', 'input': [{'feat': '/home/guoyifan/MultiChannel/egs/libri_multi_baseline/data/dev_other/data/raw_pcm_dev_other.22.flac.h5:7601-291468-0006_0', 'filetype': 'sound.hdf5', 'name': 'input1', 'shape': [3516, 4, 257]}], 'output': [{'name': 'target1', 'shape': [99, 5002], 'text': 'HIS ABODE WHICH HE HAD FIXED AT A BOWERY OR COUNTRY SEAT AT A SHORT DISTANCE FROM THE CITY JUST AT WHAT IS NOW CALLED DUTCH STREET SOON ABOUNDED WITH PROOFS OF HIS INGENUITY PATENT SMOKE JACKS THAT REQUIRED A HORSE TO WORK THEM DUTCH OVENS THAT ROASTED MEAT WITHOUT FIRE CARTS THAT WENT BEFORE THE HORSES WEATHERCOCKS THAT TURNED AGAINST THE WIND AND OTHER WRONG HEADED CONTRIVANCES THAT ASTONISHED AND CONFOUNDED ALL BEHOLDERS', 'token': '▁HIS ▁A BO DE ▁WHICH ▁HE ▁HAD ▁FIXED ▁AT ▁A ▁BOW ERY ▁OR ▁COUNTRY ▁SEAT ▁AT ▁A ▁SHORT ▁DISTANCE ▁FROM ▁THE ▁CITY ▁JUST ▁AT ▁WHAT ▁IS ▁NOW ▁CALLED ▁DUTCH ▁STREET ▁SOON ▁A BOUND ED ▁WITH ▁PROOF S ▁OF ▁HIS ▁IN GEN U ITY ▁PAT ENT ▁SMOKE ▁JACK S ▁THAT ▁REQUIRED ▁A ▁HORSE ▁TO ▁WORK ▁THEM ▁DUTCH ▁ OV ENS ▁THAT ▁ROAST ED ▁ME AT ▁WITHOUT ▁FIRE ▁CAR T S ▁THAT ▁WENT ▁BEFORE ▁THE ▁HORSES ▁WEATHER CO CK S ▁THAT ▁TURNED ▁AGAINST ▁THE ▁WIND ▁AND ▁OTHER ▁WRONG ▁HEAD ED ▁CONTRIV ANCE S ▁THAT ▁ASTONISHED ▁AND ▁CONFOUND ED ▁ALL ▁BEHOLD ERS', 'tokenid': '2406 452 62 99 4885 2361 2318 2040 725 452 925 125 3280 1360 4002 725 452 4094 1618 2141 4537 1151 2692 725 4877 2630 3211 1008 1700 4357 4228 452 65 110 4931 3618 363 3247 2406 2523 153 404 223 3362 121 4191 2644 363 4536 3828 452 2437 4606 4952 4540 1700 451 324 120 4536 3892 110 2964 39 4935 2029 1028 382 363 4536 4870 821 4537 2439 4860 87 84 363 4536 4688 550 4537 4917 603 3293 4979 2362 110 1317 26 363 4536 722 603 1267 110 573 832 123'}], 'utt2spk': '7601-291468'}),...]
-
         _, info = sorted_data[start]
         ilen = int(info[ikey][iaxis]["shape"][0])
         olen = (
@@ -100,7 +98,7 @@ def batchfy_by_bin(
 
     the number of bins up to `batch_bins`.
 
-    :param List[Tuple[str, Dict[str, List[Dict[str, Any]]]] sorted_data: dictionary loaded from data.json
+    :param Dict[str, Dict[str, Any]] sorted_data: dictionary loaded from data.json
     :param int batch_bins: Maximum frames of a batch
     :param int num_batches: # number of batches to use (for debug)
     :param int min_batch_size: minimum batch size (for multi-gpu)
@@ -442,7 +440,7 @@ def make_batchset(
         category2data.setdefault(v.get("category"), {})[k] = v
 
     batches_list = []  # List[List[List[Tuple[str, dict]]]]
-    for d in category2data.values(): # d is dict; "multichannel": {}, "None": {}
+    for d in category2data.values():
         if batch_sort_key == "shuffle":
             batches = batchfy_shuffle(
                 d, batch_size, min_batch_size, num_batches, shortest_first
@@ -450,74 +448,12 @@ def make_batchset(
             batches_list.append(batches)
             continue
 
-        # sort it by input lengths (long to short) 
-        # 'input': [{'feat': '/home/guoyifan/MultiChannel/egs/libri_multi_baseline/data/dev_other/data/raw_pcm_dev_other.1.flac.h5:116-288045-0000_0', 'filetype': 'sound.hdf5', 'name': 'input1', 'shape': [1066, 4, 257]}],
-        # d -> 
-        # {
-        # "116-288045-0000_0": {
-        #     "category": "multichannel",
-        #     "input": [
-        #         {
-        #             "feat": "/home/guoyifan/MultiChannel/egs/libri_multi_baseline/data/dev_other/data/raw_pcm_dev_other.1.flac.h5:116-288045-0000_0",
-        #             "filetype": "sound.hdf5",
-        #             "name": "input1",
-        #             "shape": [
-        #                 1066,
-        #                 4,
-        #                 257
-        #             ]
-        #         }
-        #     ],
-        #     "output": [
-        #         {
-        #             "name": "target1",
-        #             "shape": [
-        #                 43,
-        #                 5002
-        #             ],
-        #             "text": "AS I APPROACHED THE CITY I HEARD BELLS RINGING AND A LITTLE LATER I FOUND THE STREETS ASTIR WITH THRONGS OF WELL DRESSED PEOPLE IN FAMILY GROUPS WENDING THEIR WAY HITHER AND THITHER",
-        #             "token": "▁AS ▁I ▁APPROACHED ▁THE ▁CITY ▁I ▁HEARD ▁BELL S ▁RING ING ▁AND ▁A ▁LITTLE ▁LATER ▁I ▁FOUND ▁THE ▁STREETS ▁AS T IR ▁WITH ▁THRONG S ▁OF ▁WELL ▁DRESSED ▁PEOPLE ▁IN ▁FAMILY ▁GROUP S ▁WE N D ING ▁THEIR ▁WAY ▁HIT HER ▁AND ▁THITHER",
-        #             "tokenid": "698 2484 660 4537 1151 2484 2368 837 363 3882 203 603 452 2841 2760 2484 2109 4537 4358 698 382 209 4931 4584 363 3247 4868 1671 3393 2523 1950 2294 363 4854 283 96 203 4539 4852 2410 166 603 4562"
-        #         }
-        #     ],
-        #     "utt2spk": "116-288045"
-        #   },
-        # "116-288045-0000_1": {
-        #     "category": "multichannel",
-        #     "input": [
-        #         {
-        #             "feat": "/home/guoyifan/MultiChannel/egs/libri_multi_baseline/data/dev_other/data/raw_pcm_dev_other.1.flac.h5:116-288045-0000_1",
-        #             "filetype": "sound.hdf5",
-        #             "name": "input1",
-        #             "shape": [
-        #                 1066,
-        #                 4,
-        #                 257
-        #             ]
-        #         }
-        #     ],
-        #     "output": [
-        #         {
-        #             "name": "target1",
-        #             "shape": [
-        #                 43,
-        #                 5002
-        #             ],
-        #             "text": "AS I APPROACHED THE CITY I HEARD BELLS RINGING AND A LITTLE LATER I FOUND THE STREETS ASTIR WITH THRONGS OF WELL DRESSED PEOPLE IN FAMILY GROUPS WENDING THEIR WAY HITHER AND THITHER",
-        #             "token": "▁AS ▁I ▁APPROACHED ▁THE ▁CITY ▁I ▁HEARD ▁BELL S ▁RING ING ▁AND ▁A ▁LITTLE ▁LATER ▁I ▁FOUND ▁THE ▁STREETS ▁AS T IR ▁WITH ▁THRONG S ▁OF ▁WELL ▁DRESSED ▁PEOPLE ▁IN ▁FAMILY ▁GROUP S ▁WE N D ING ▁THEIR ▁WAY ▁HIT HER ▁AND ▁THITHER",
-        #             "tokenid": "698 2484 660 4537 1151 2484 2368 837 363 3882 203 603 452 2841 2760 2484 2109 4537 4358 698 382 209 4931 4584 363 3247 4868 1671 3393 2523 1950 2294 363 4854 283 96 203 4539 4852 2410 166 603 4562"
-        #         }
-        #     ],
-        #     "utt2spk": "116-288045"
-        #   },
-        # }
+        # sort it by input lengths (long to short)
         sorted_data = sorted(
             d.items(),
             key=lambda data: int(data[1][batch_sort_key][batch_sort_axis]["shape"][0]),
             reverse=not shortest_first,
         )
-        # sorted_data -> List(Tuple(str, Dict))
-        # [('7601-291468-0006_0', {'category': 'multichannel', 'input': [{'feat': '/home/guoyifan/MultiChannel/egs/libri_multi_baseline/data/dev_other/data/raw_pcm_dev_other.22.flac.h5:7601-291468-0006_0', 'filetype': 'sound.hdf5', 'name': 'input1', 'shape': [3516, 4, 257]}], 'output': [{'name': 'target1', 'shape': [99, 5002], 'text': 'HIS ABODE WHICH HE HAD FIXED AT A BOWERY OR COUNTRY SEAT AT A SHORT DISTANCE FROM THE CITY JUST AT WHAT IS NOW CALLED DUTCH STREET SOON ABOUNDED WITH PROOFS OF HIS INGENUITY PATENT SMOKE JACKS THAT REQUIRED A HORSE TO WORK THEM DUTCH OVENS THAT ROASTED MEAT WITHOUT FIRE CARTS THAT WENT BEFORE THE HORSES WEATHERCOCKS THAT TURNED AGAINST THE WIND AND OTHER WRONG HEADED CONTRIVANCES THAT ASTONISHED AND CONFOUNDED ALL BEHOLDERS', 'token': '▁HIS ▁A BO DE ▁WHICH ▁HE ▁HAD ▁FIXED ▁AT ▁A ▁BOW ERY ▁OR ▁COUNTRY ▁SEAT ▁AT ▁A ▁SHORT ▁DISTANCE ▁FROM ▁THE ▁CITY ▁JUST ▁AT ▁WHAT ▁IS ▁NOW ▁CALLED ▁DUTCH ▁STREET ▁SOON ▁A BOUND ED ▁WITH ▁PROOF S ▁OF ▁HIS ▁IN GEN U ITY ▁PAT ENT ▁SMOKE ▁JACK S ▁THAT ▁REQUIRED ▁A ▁HORSE ▁TO ▁WORK ▁THEM ▁DUTCH ▁ OV ENS ▁THAT ▁ROAST ED ▁ME AT ▁WITHOUT ▁FIRE ▁CAR T S ▁THAT ▁WENT ▁BEFORE ▁THE ▁HORSES ▁WEATHER CO CK S ▁THAT ▁TURNED ▁AGAINST ▁THE ▁WIND ▁AND ▁OTHER ▁WRONG ▁HEAD ED ▁CONTRIV ANCE S ▁THAT ▁ASTONISHED ▁AND ▁CONFOUND ED ▁ALL ▁BEHOLD ERS', 'tokenid': '2406 452 62 99 4885 2361 2318 2040 725 452 925 125 3280 1360 4002 725 452 4094 1618 2141 4537 1151 2692 725 4877 2630 3211 1008 1700 4357 4228 452 65 110 4931 3618 363 3247 2406 2523 153 404 223 3362 121 4191 2644 363 4536 3828 452 2437 4606 4952 4540 1700 451 324 120 4536 3892 110 2964 39 4935 2029 1028 382 363 4536 4870 821 4537 2439 4860 87 84 363 4536 4688 550 4537 4917 603 3293 4979 2362 110 1317 26 363 4536 722 603 1267 110 573 832 123'}], 'utt2spk': '7601-291468'}),...]
         logging.info("# utts: " + str(len(sorted_data)))
         if count == "seq":
             batches = batchfy_by_seq(
@@ -565,5 +501,5 @@ def make_batchset(
         batches = batches[:num_batches]
     logging.info("# minibatches: " + str(len(batches)))
 
-    # batch: List(num_batches)[[Tuple[str(uttid), dict(json,feat,name,shape...)]],[Tuple[str(uttid), dict(json,feat,name,shape...)]], ...]
+    # batch: List[List[Tuple[str, dict]]]
     return batches

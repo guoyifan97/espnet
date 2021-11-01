@@ -348,7 +348,9 @@ class CNN_Front_Attention_Mean(nn.Module):
 
         """
 
-        # BCTF
+        # BTCF -> BCTF
+        data = data.transpose(1,2)
+
         x_time_r, x_time_i = self.data_norm(data.real, data.imag)
         # print(x_time_r.shape)
         if not getattr(self, "return_mask", False):

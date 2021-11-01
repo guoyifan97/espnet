@@ -16,19 +16,23 @@ from espnet.nets.pytorch_backend.transformer.layer_norm import LayerNorm
 class EncoderLayer(nn.Module):
     """Encoder layer module.
 
-    :param int size: input dim
-    :param espnet.nets.pytorch_backend.transformer.attention.
-        MultiHeadedAttention self_attn: self attention module
-    :param espnet.nets.pytorch_backend.transformer.positionwise_feed_forward.
-        PositionwiseFeedForward feed_forward:
-        feed forward module
-    :param float dropout_rate: dropout rate
-    :param bool normalize_before: whether to use layer_norm before the first block
-    :param bool concat_after: whether to concat attention layer's input and output
-        if True, additional linear will be applied.
-        i.e. x -> x + linear(concat(x, att(x)))
-        if False, no additional linear will be applied. i.e. x -> x + att(x)
-
+    Args:
+        size (int): Input dimension.
+        self_attn (torch.nn.Module): Self-attention module instance.
+            `MultiHeadedAttention` or `RelPositionMultiHeadedAttention` instance
+            can be used as the argument.
+        feed_forward (torch.nn.Module): Feed-forward module instance.
+            `PositionwiseFeedForward`, `MultiLayeredConv1d`, or `Conv1dLinear` instance
+            can be used as the argument.
+        dropout_rate (float): Dropout rate.
+        normalize_before (bool): Whether to use layer_norm before the first block.
+        concat_after (bool): Whether to concat attention layer's input and output.
+            if True, additional linear will be applied.
+            i.e. x -> x + linear(concat(x, att(x)))
+            if False, no additional linear will be applied. i.e. x -> x + att(x)
+        stochastic_depth_rate (float): Proability to skip this layer.
+            During training, the layer may skip residual computation and return input
+            as-is with given probability.
     """
 
     def __init__(
@@ -39,6 +43,7 @@ class EncoderLayer(nn.Module):
         dropout_rate,
         normalize_before=True,
         concat_after=False,
+        stochastic_depth_rate=0.0,
     ):
         """Construct an EncoderLayer object."""
         super(EncoderLayer, self).__init__()
@@ -52,16 +57,34 @@ class EncoderLayer(nn.Module):
         self.concat_after = concat_after
         if self.concat_after:
             self.concat_linear = nn.Linear(size + size, size)
+        self.stochastic_depth_rate = stochastic_depth_rate
 
     def forward(self, x, mask, cache=None):
         """Compute encoded features.
 
-        :param torch.Tensor x: encoded source features (batch, max_time_in, size)
-        :param torch.Tensor mask: mask for x
-            (batch, 1, max_time_in) or (batch, max_time_in, max_time_in)
-        :param torch.Tensor cache: cache for x (batch, max_time_in - 1, size)
-        :rtype: Tuple[torch.Tensor, torch.Tensor]
+        Args:
+            x_input (torch.Tensor): Input tensor (#batch, time, size).
+            mask (torch.Tensor): Mask tensor for the input (#batch, time).
+            cache (torch.Tensor): Cache tensor of the input (#batch, time - 1, size).
+
+        Returns:
+            torch.Tensor: Output tensor (#batch, time, size).
+            torch.Tensor: Mask tensor (#batch, time).
+
         """
+        skip_layer = False
+        # with stochastic depth, residual connection `x + f(x)` becomes
+        # `x <- x + 1 / (1 - p) * f(x)` at training time.
+        stoch_layer_coeff = 1.0
+        if self.training and self.stochastic_depth_rate > 0:
+            skip_layer = torch.rand(1).item() < self.stochastic_depth_rate
+            stoch_layer_coeff = 1.0 / (1 - self.stochastic_depth_rate)
+
+        if skip_layer:
+            if cache is not None:
+                x = torch.cat([cache, x], dim=1)
+            return x, mask
+
         residual = x
         if self.normalize_before:
             x = self.norm1(x)
@@ -76,16 +99,18 @@ class EncoderLayer(nn.Module):
 
         if self.concat_after:
             x_concat = torch.cat((x, self.self_attn(x_q, x, x, mask)), dim=-1)
-            x = residual + self.concat_linear(x_concat)
+            x = residual + stoch_layer_coeff * self.concat_linear(x_concat)
         else:
-            x = residual + self.dropout(self.self_attn(x_q, x, x, mask))
+            x = residual + stoch_layer_coeff * self.dropout(
+                self.self_attn(x_q, x, x, mask)
+            )
         if not self.normalize_before:
             x = self.norm1(x)
 
         residual = x
         if self.normalize_before:
             x = self.norm2(x)
-        x = residual + self.dropout(self.feed_forward(x))
+        x = residual + stoch_layer_coeff * self.dropout(self.feed_forward(x))
         if not self.normalize_before:
             x = self.norm2(x)
 

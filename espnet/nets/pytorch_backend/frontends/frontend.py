@@ -9,7 +9,10 @@ import torch.nn as nn
 from torch_complex.tensor import ComplexTensor
 
 # from espnet.nets.pytorch_backend.frontends.complex_beamformer import Complex_Beamformer
-
+class AssisstantClass:
+    def __init__(self, args):
+        for key in args.keys():
+            setattr(self, key, args[key])
 
 class Frontend(nn.Module):
     def __init__(
@@ -51,12 +54,16 @@ class Frontend(nn.Module):
     ):
         super().__init__()
 
+        if isinstance(args, dict):
+            args = AssisstantClass(args)
+            
+        if isinstance(cb_conv_layer_list, str):
+            cb_conv_layer_list = eval(cb_conv_layer_list)
+
         self.use_beamformer = use_beamformer
         self.use_beamformer_guo = use_beamformer_guo
         self.use_complex_beamformer = use_complex_beamformer
         self.use_universal_beamformer = getattr(args, "use_universal_beamformer", False)
-        print(args)
-        raise
         self.random_pick_channel = getattr(args, "random_pick_channel", 0)
         if self.random_pick_channel != 0:
             print(f"We shall pick {self.random_pick_channel} channel to train nn")
@@ -94,10 +101,11 @@ class Frontend(nn.Module):
         else:
             self.wpe = None
 
+
         if self.use_beamformer:
             if self.use_beamformer_guo:
-                from espnet.nets.pytorch_backend.frontends.dnn_beamformer_v2 import DNN_Beamformer_V2
-                self.beamformer = DNN_Beamformer_V2(
+                from espnet.nets.pytorch_backend.frontends.dnn_beamformer_v2 import DNN_Beamformer_V2 as DNN_Beamformer
+                self.beamformer = DNN_Beamformer(
                     btype=btype,
                     bidim=idim,
                     bunits=bunits,
@@ -271,7 +279,7 @@ class Frontend(nn.Module):
                         n_time_att_blocks=args.uf_n_time_att_blocks,
                         fft_feat=args.uf_n_fft_feat,
                         att_feat=args.uf_n_att_feat,
-                        dropout_rate=args.dropout_rate,
+                        dropout_rate=getattr(args, "dropout_rate", 0),
                         reduce_method=getattr(args, "uf_reduce_method", "mask"),
                         use_residual=getattr(args, "uf_use_residual", True),
                         use_sub_sampling=getattr(args, "uf_use_subsampling", False),
@@ -401,49 +409,70 @@ class Frontend(nn.Module):
 
             # randomly pick given number of channels of audio into frontend
             if self.random_pick_channel != 0 and self.training:
-                if self.use_complex_beamformer or self.use_universal_beamformer:
-                    C = h.shape[1] # B C T F
-                    if C==1:
-                        pass
-                    elif self.random_pick_channel == 2:
-                        h = h.index_select(1, torch.randperm(C).cuda()[0:2])   # We use 1,3 microphone for 2 mic track; Actually the 2nd channel here is correspond to the 3th mic.
-                    else:
-                        if self.random_pick_channel > 0:
-                            num_channels = self.random_pick_channel
-                        elif self.random_pick_channel == -1:
-                            num_channels = int(torch.randint(2, C+1, (1,)))
-                        elif self.random_pick_channel == -2:
-                            num_channels = int(torch.randint(1, C+1, (1,)))
-                        elif self.random_pick_channel == -3:
-                            num_channels = C if numpy.random.randint(2) == 0 else 1 
-                        else:
-                            raise ValueError(self.random_pick_channel)
-                        # num_channels = int(self.random_pick_channel if self.random_pick_channel > 0 else torch.randint(2, C+1, (1,)))
-                        channel_setoff = torch.randint(0, C-num_channels+1, (1,))
-                        h = h[:, channel_setoff: channel_setoff+num_channels]
-
+                C = h.shape[2] # B T C F
+                if C==1:
+                    pass
+                elif self.random_pick_channel == 2:
+                    h = h.index_select(2, torch.randperm(C).cuda()[0:2])  # We use 1,3 microphone for 2 mic track
                 else:
-                    C = h.shape[2] # B T C F
-                    if C==1:
-                        pass
-                    elif self.random_pick_channel == 2:
-                        h = h.index_select(2, torch.randperm(C).cuda()[0:2])  # We use 1,3 microphone for 2 mic track
+                    # num_channels = int(self.random_pick_channel if self.random_pick_channel > 0 else torch.randint(2, C+1, (1,)))
+                    if self.random_pick_channel > 0:
+                        num_channels = self.random_pick_channel
+                    elif self.random_pick_channel == -1:
+                        num_channels = int(torch.randint(2, C+1, (1,)))
+                    elif self.random_pick_channel == -2:
+                        num_channels = int(torch.randint(1, C+1, (1,)))
+                    elif self.random_pick_channel == -3:
+                        num_channels = C if numpy.random.randint(2) == 0 else 1 
                     else:
-                        # num_channels = int(self.random_pick_channel if self.random_pick_channel > 0 else torch.randint(2, C+1, (1,)))
-                        if self.random_pick_channel > 0:
-                            num_channels = self.random_pick_channel
-                        elif self.random_pick_channel == -1:
-                            num_channels = int(torch.randint(2, C+1, (1,)))
-                        elif self.random_pick_channel == -2:
-                            num_channels = int(torch.randint(1, C+1, (1,)))
-                        elif self.random_pick_channel == -3:
-                            num_channels = C if numpy.random.randint(2) == 0 else 1 
-                        else:
-                            raise ValueError(self.random_pick_channel)
-                        # if num_channels == 1: # Baseline doesn't surpport mono-channel input, so we just skip it.
-                        #     return h, ilens, None
-                        channel_setoff = torch.randint(0, C-num_channels+1, (1,))
-                        h = h[:, :, channel_setoff: channel_setoff+num_channels]
+                        raise ValueError(self.random_pick_channel)
+                    # if num_channels == 1: # Baseline doesn't surpport mono-channel input, so we just skip it.
+                    #     return h, ilens, None
+                    channel_setoff = torch.randint(0, C-num_channels+1, (1,))
+                    h = h[:, :, channel_setoff: channel_setoff+num_channels]
+                # if self.use_complex_beamformer or self.use_universal_beamformer:
+                #     C = h.shape[1] # B C T F
+                #     if C==1:
+                #         pass
+                #     elif self.random_pick_channel == 2:
+                #         h = h.index_select(1, torch.randperm(C).cuda()[0:2])   # We use 1,3 microphone for 2 mic track; Actually the 2nd channel here is correspond to the 3th mic.
+                #     else:
+                #         if self.random_pick_channel > 0:
+                #             num_channels = self.random_pick_channel
+                #         elif self.random_pick_channel == -1:
+                #             num_channels = int(torch.randint(2, C+1, (1,)))
+                #         elif self.random_pick_channel == -2:
+                #             num_channels = int(torch.randint(1, C+1, (1,)))
+                #         elif self.random_pick_channel == -3:
+                #             num_channels = C if numpy.random.randint(2) == 0 else 1 
+                #         else:
+                #             raise ValueError(self.random_pick_channel)
+                #         # num_channels = int(self.random_pick_channel if self.random_pick_channel > 0 else torch.randint(2, C+1, (1,)))
+                #         channel_setoff = torch.randint(0, C-num_channels+1, (1,))
+                #         h = h[:, channel_setoff: channel_setoff+num_channels]
+
+                # else:
+                #     C = h.shape[2] # B T C F
+                #     if C==1:
+                #         pass
+                #     elif self.random_pick_channel == 2:
+                #         h = h.index_select(2, torch.randperm(C).cuda()[0:2])  # We use 1,3 microphone for 2 mic track
+                #     else:
+                #         # num_channels = int(self.random_pick_channel if self.random_pick_channel > 0 else torch.randint(2, C+1, (1,)))
+                #         if self.random_pick_channel > 0:
+                #             num_channels = self.random_pick_channel
+                #         elif self.random_pick_channel == -1:
+                #             num_channels = int(torch.randint(2, C+1, (1,)))
+                #         elif self.random_pick_channel == -2:
+                #             num_channels = int(torch.randint(1, C+1, (1,)))
+                #         elif self.random_pick_channel == -3:
+                #             num_channels = C if numpy.random.randint(2) == 0 else 1 
+                #         else:
+                #             raise ValueError(self.random_pick_channel)
+                #         # if num_channels == 1: # Baseline doesn't surpport mono-channel input, so we just skip it.
+                #         #     return h, ilens, None
+                #         channel_setoff = torch.randint(0, C-num_channels+1, (1,))
+                #         h = h[:, :, channel_setoff: channel_setoff+num_channels]
                     
 
             # 1. WPE

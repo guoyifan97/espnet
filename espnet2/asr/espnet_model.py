@@ -212,6 +212,7 @@ class ESPnetASRModel(AbsESPnetModel):
         """
         with autocast(False):
             # 1. Extract feats
+            # flag = (speech.dim() == 3)
             feats, feats_lengths = self._extract_feats(speech, speech_lengths)
 
             # 2. Data augmentation
@@ -225,18 +226,22 @@ class ESPnetASRModel(AbsESPnetModel):
         # Pre-encoder, e.g. used for raw input data
         if self.preencoder is not None:
             feats, feats_lengths = self.preencoder(feats, feats_lengths)
+            # logging.info(f"preencoder, Multichannel flag: {flag}, nan-test: {torch.isnan(feats).any()}, inf-test:{torch.isinf(feats).any()}")
 
         # 4. Forward encoder
         # feats: (Batch, Length, Dim)
         # -> encoder_out: (Batch, Length2, Dim2)
         encoder_out, encoder_out_lens, _ = self.encoder(feats, feats_lengths)
 
+        # logging.info(f"Encoder, Multichannel flag: {flag}, nan-test: {torch.isnan(encoder_out).any()}, inf-test:{torch.isinf(encoder_out).any()}")
+
         # Post-encoder, e.g. NLU
         if self.postencoder is not None:
             encoder_out, encoder_out_lens = self.postencoder(
                 encoder_out, encoder_out_lens
             )
-
+            # logging.info(f"Post-Encoder, Multichannel flag: {flag}, nan-test: {torch.isnan(encoder_out).any()}, inf-test:{torch.isinf(encoder_out).any()}")
+        
         assert encoder_out.size(0) == speech.size(0), (
             encoder_out.size(),
             speech.size(0),
@@ -256,6 +261,7 @@ class ESPnetASRModel(AbsESPnetModel):
         # for data-parallel
         speech = speech[:, : speech_lengths.max()]
 
+        # flag = (speech.dim() == 3)
         if self.frontend is not None:
             # Frontend
             #  e.g. STFT and Feature extract
@@ -265,6 +271,8 @@ class ESPnetASRModel(AbsESPnetModel):
         else:
             # No frontend and no feature extract
             feats, feats_lengths = speech, speech_lengths
+        
+        # logging.info(f"_extract_feats, Multichannel flag: {flag}, nan-test: {torch.isnan(feats).any()}, inf-test:{torch.isinf(feats).any()}")
         return feats, feats_lengths
 
     def _calc_att_loss(
@@ -281,9 +289,11 @@ class ESPnetASRModel(AbsESPnetModel):
         decoder_out, _ = self.decoder(
             encoder_out, encoder_out_lens, ys_in_pad, ys_in_lens
         )
+        # logging.info(f"decoder, nan-test: {torch.isnan(decoder_out).any()}, inf-test:{torch.isinf(decoder_out).any()}")
 
         # 2. Compute attention loss
         loss_att = self.criterion_att(decoder_out, ys_out_pad)
+        # logging.info(f"loss_att, nan-test: {torch.isnan(loss_att).any()}, inf-test:{torch.isinf(loss_att).any()}")
         acc_att = th_accuracy(
             decoder_out.view(-1, self.vocab_size),
             ys_out_pad,
@@ -314,6 +324,7 @@ class ESPnetASRModel(AbsESPnetModel):
         if not self.training and self.error_calculator is not None:
             ys_hat = self.ctc.argmax(encoder_out).data
             cer_ctc = self.error_calculator(ys_hat.cpu(), ys_pad.cpu(), is_ctc=True)
+        # logging.info(f"loss_ctc, nan-test: {torch.isnan(loss_ctc).any()}, inf-test:{torch.isinf(loss_ctc).any()}")
         return loss_ctc, cer_ctc
 
     def _calc_rnnt_loss(

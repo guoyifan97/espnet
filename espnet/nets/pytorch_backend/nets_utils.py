@@ -20,8 +20,14 @@ def to_device(m, x):
         Tensor: Torch tensor located in the same place as torch module.
 
     """
-    assert isinstance(m, torch.nn.Module)
-    device = next(m.parameters()).device
+    if isinstance(m, torch.nn.Module):
+        device = next(m.parameters()).device
+    elif isinstance(m, torch.Tensor):
+        device = m.device
+    else:
+        raise TypeError(
+            "Expected torch.nn.Module or torch.tensor, " f"bot got: {type(m)}"
+        )
     return x.to(device)
 
 
@@ -55,7 +61,7 @@ def pad_list(xs, pad_value):
     return pad
 
 def pad_list_multichannel(xs, pad_value):
-    """Perform padding for the list of tensors. 
+    """Perform padding for the list of tensors.
     B CTF
 
     Args:
@@ -82,8 +88,6 @@ def pad_list_multichannel(xs, pad_value):
         pad[i, :, : xs[i].size(1)] = xs[i]
 
     return pad
-
-
 
 
 def make_pad_mask(lengths, xs=None, length_dim=-1):
@@ -387,15 +391,7 @@ def to_torch_tensor(x):
         if "real" not in x or "imag" not in x:
             raise ValueError("has 'real' and 'imag' keys: {}".format(list(x)))
         # Relative importing because of using python3 syntax
-        if not isinstance(x["real"], list):
-            return ComplexTensor(x["real"], x["imag"])
-        else:
-            return [ComplexTensor(x["real"][i], x["imag"][i]) for i in range(len(x["real"]))]
-
-    elif isinstance(x, list):
-        if isinstance(x[0], torch.Tensor):
-            return x
-        return [torch.from_numpy(i) for i in x]
+        return ComplexTensor(x["real"], x["imag"])
 
     # If torch.Tensor, as it is
     elif isinstance(x, torch.Tensor):
@@ -513,3 +509,19 @@ def rename_state_dict(
         v = state_dict.pop(k)
         new_k = k.replace(old_prefix, new_prefix)
         state_dict[new_k] = v
+
+
+def get_activation(act):
+    """Return activation function."""
+    # Lazy load to avoid unused import
+    from espnet.nets.pytorch_backend.conformer.swish import Swish
+
+    activation_funcs = {
+        "hardtanh": torch.nn.Hardtanh,
+        "tanh": torch.nn.Tanh,
+        "relu": torch.nn.ReLU,
+        "selu": torch.nn.SELU,
+        "swish": Swish,
+    }
+
+    return activation_funcs[act]()

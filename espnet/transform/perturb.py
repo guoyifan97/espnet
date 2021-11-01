@@ -2,8 +2,6 @@ import librosa
 import numpy
 import scipy
 import soundfile
-import torchaudio
-import torch
 
 from espnet.utils.io_utils import SoundHDF5File
 
@@ -198,7 +196,6 @@ class NoiseInjection(object):
 
     def __init__(
         self,
-        sr=16000,
         utt2noise=None,
         lower=-20,
         upper=-5,
@@ -243,8 +240,6 @@ class NoiseInjection(object):
                 raise ValueError(filetype)
         else:
             self.utt2noise = None
-
-        assert sr == self.utt2noise[self.utt2noise.keys()[0]][1], ""
 
         if utt2noise is not None and utt2ratio is not None:
             if set(self.utt2ratio) != set(self.utt2noise):
@@ -322,14 +317,11 @@ class RIRConvolve(object):
                     utt, filename = line.rstrip().split(None, 1)
                     signal, rate = soundfile.read(filename, dtype="int16")
                     self.utt2rir[utt] = (signal, rate)
-        
 
         elif filetype == "sound.hdf5":
             self.utt2rir = SoundHDF5File(utt2rir, "r")
         else:
             raise NotImplementedError(filetype)
-        
-        assert sr == self.utt2rir[self.utt2rir.keys()[0]][1], ""
 
     def __repr__(self):
         return '{}("{}")'.format(self.__class__.__name__, self.utt2rir_file)
