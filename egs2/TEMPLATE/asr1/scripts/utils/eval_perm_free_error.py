@@ -67,6 +67,7 @@ def compute_permutation(old_dic, num_spkrs=2):
         all_scores[:, :, :, 0:3], axis=-1, dtype=np.float
     ))  # (s+d+i) / (c+s+d), (B, n_ref, n_hyp)
 
+
     min_scores, hyp_perms = [], []
     for idx, error_rate in enumerate(all_error_rates):
         row_idx, col_idx = linear_sum_assignment(error_rate)
@@ -168,6 +169,7 @@ def read_trn(file_path):
             except:
                 # Empty prediction cases GUO
                 text, utt_id = "", line.split()[0]
+
             if utt_id[0] == "(" and utt_id[-1] == ")":
                 utt_id = utt_id[1:-1]
             ret_dict[utt_id] = text

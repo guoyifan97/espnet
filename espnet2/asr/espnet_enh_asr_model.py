@@ -97,7 +97,6 @@ class ESPnetEnhASRModel(AbsESPnetModel):
         # if < 1.0, feed the real data only to ASR with probability `enh_real_prob`
         self.enh_real_prob = enh_real_prob
 
-
     def forward(
         self,
         speech_mix: torch.Tensor,
@@ -414,7 +413,6 @@ class ESPnetEnhASRModel(AbsESPnetModel):
             speech_pre: List[torch.Tensor(Batch, samples)]
             out_lengths: (Batch,)
         """
-
         (
             speech_mix,
             speech_lengths,

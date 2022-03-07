@@ -122,6 +122,7 @@ def main():
                         with BytesIO(f.read()) as g:
                             # wave, rate = soundfile.read(g, dtype=np.int16) # GUO
                             wave, rate = soundfile.read(g, dtype=np.float64)
+
                             if wave.ndim == 2 and utt2ref_channels is not None:
                                 wave = wave[:, utt2ref_channels(uttid)]
 
@@ -164,6 +165,7 @@ def main():
                                 wave.astype(np.float64), rate, args.fs, axis=0
                             )
                             # wave = wave.astype(np.int16) # GUO
+
                             rate = args.fs
 
                         owavpath = str(wavdir / f"{uttid}.{args.audio_format}")

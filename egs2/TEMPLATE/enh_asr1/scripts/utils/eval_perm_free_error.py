@@ -1,1 +1,1 @@
-/workspace/espnet/espnet/egs2/TEMPLATE/asr1/scripts/utils/eval_perm_free_error.py
+../../../../TEMPLATE/asr1/scripts/utils/eval_perm_free_error.py
