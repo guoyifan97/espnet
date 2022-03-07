@@ -69,7 +69,6 @@ def load_num_sequence_text(
     # -> return {'utta': np.ndarray([1, 0]),
     #            'uttb': np.ndarray([3, 4, 5])}
     d = read_2column_text(path)
-
     # Using for-loop instead of dict-comprehension for debuggability
     retval = {}
     for k, v in d.items():

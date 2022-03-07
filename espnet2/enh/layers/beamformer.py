@@ -17,6 +17,7 @@ from espnet2.enh.layers.complex_utils import matmul
 from espnet2.enh.layers.complex_utils import reverse
 from espnet2.enh.layers.complex_utils import solve
 
+import logging
 
 is_torch_1_9_plus = LooseVersion(torch.__version__) >= LooseVersion("1.9.0")
 EPS = torch.finfo(torch.double).eps
@@ -136,13 +137,26 @@ def get_mvdr_vector(
         psd_n = tik_reg(psd_n, reg=diag_eps, eps=eps)
 
     if use_torch_solver:
-        numerator = solve(psd_s, psd_n)
+        temp = torch.max(psd_n.real.abs().max(), psd_n.imag.abs().max())
+        numerator = solve(
+            psd_s * 100 / temp, 
+            psd_n * 100 / temp,
+            )
     else:
         numerator = matmul(inverse(psd_n), psd_s)
+
+    if numerator.real.isnan().any() or numerator.imag.isnan().any():
+        logging.info(f"{abs(numerator).isnan().any()}")
+        logging.info(f"psd_n: {abs(psd_n).isnan().any()}, psd_s: {abs(psd_s).isnan().any()}")
+        raise
+    # if numerator.device.index == 0:
+    #     logging.info(f"numerator: {abs(numerator).isnan().any()}")
     # NOTE (wangyou): until PyTorch 1.9.0, torch.trace does not
     # support bacth processing. Use FC.trace() as fallback.
     # ws: (..., C, C) / (...,) -> (..., C, C)
     ws = numerator / (FC.trace(numerator)[..., None, None] + eps)
+    # if numerator.device.index == 0:
+        # logging.info(f"ws: {abs(ws).isnan().any()}")
     # h: (..., F, C_1, C_2) x (..., C_2) -> (..., F, C_1)
     beamform_vector = einsum("...fec,...c->...fe", ws, reference_vector)
     return beamform_vector
@@ -740,3 +754,12 @@ def minimum_gain_like(
         return output, alpha
     else:
         return output
+
+if __name__ == "__main__":
+    a = torch.eye(3) + 2
+    b = torch.eye(3) + 3
+    ref = torch.zeros(3)
+    ref[0] = 1.
+    a = torch.complex(a, torch.zeros(3,3)).unsqueeze(0)
+    b = torch.complex(b, torch.zeros(3,3)).unsqueeze(0)
+    print(a,b,ref,get_mvdr_vector(a, b, ref))

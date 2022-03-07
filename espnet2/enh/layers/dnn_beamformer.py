@@ -492,10 +492,11 @@ class DNN_Beamformer(torch.nn.Module):
 
 
 class AttentionReference(torch.nn.Module):
-    def __init__(self, bidim, att_dim):
+    def __init__(self, bidim, att_dim, eps=1e-6):
         super().__init__()
         self.mlp_psd = torch.nn.Linear(bidim, att_dim)
         self.gvec = torch.nn.Linear(att_dim, 1)
+        self.eps = eps
 
     def forward(
         self,
@@ -504,7 +505,7 @@ class AttentionReference(torch.nn.Module):
         scaling: float = 2.0,
     ) -> Tuple[torch.Tensor, torch.LongTensor]:
         """Attention-based reference forward function.
-
+        
         Args:
             psd_in (torch.complex64/ComplexTensor): (B, F, C, C)
             ilens (torch.Tensor): (B,)
@@ -523,7 +524,7 @@ class AttentionReference(torch.nn.Module):
         psd = (psd.sum(dim=-1) / (C - 1)).transpose(-1, -2)
 
         # Calculate amplitude
-        psd_feat = (psd.real ** 2 + psd.imag ** 2) ** 0.5
+        psd_feat = (psd.real ** 2 + psd.imag ** 2 + self.eps) ** 0.5
 
         # (B, C, F) -> (B, C, F2)
         mlp_psd = self.mlp_psd(psd_feat)

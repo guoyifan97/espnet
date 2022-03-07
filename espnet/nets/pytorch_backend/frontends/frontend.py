@@ -9,13 +9,16 @@ import torch.nn as nn
 from torch_complex.tensor import ComplexTensor
 
 # from espnet.nets.pytorch_backend.frontends.complex_beamformer import Complex_Beamformer
-
+class AssisstantClass:
+    def __init__(self, args):
+        for key in args.keys():
+            setattr(self, key, args[key])
 
 class Frontend(nn.Module):
     def __init__(
         self,
+        args,
         idim: int,
-        args = dict(),
         # WPE options
         use_wpe: bool = False,
         wtype: str = "blstmp",
@@ -50,8 +53,13 @@ class Frontend(nn.Module):
         cb_down_sample_layer: List[Tuple[str]] = [(16, 7, 2), (64, 5, 2)],
     ):
         super().__init__()
-        print(args)
-        raise
+
+        if isinstance(args, dict):
+            args = AssisstantClass(args)
+            
+        if isinstance(cb_conv_layer_list, str):
+            cb_conv_layer_list = eval(cb_conv_layer_list)
+
         self.use_beamformer = use_beamformer
         self.use_beamformer_guo = use_beamformer_guo
         self.use_complex_beamformer = use_complex_beamformer
@@ -93,10 +101,11 @@ class Frontend(nn.Module):
         else:
             self.wpe = None
 
+
         if self.use_beamformer:
             if self.use_beamformer_guo:
-                from espnet.nets.pytorch_backend.frontends.dnn_beamformer_v2 import DNN_Beamformer_V2
-                self.beamformer = DNN_Beamformer_V2(
+                from espnet.nets.pytorch_backend.frontends.dnn_beamformer_v2 import DNN_Beamformer_V2 as DNN_Beamformer
+                self.beamformer = DNN_Beamformer(
                     btype=btype,
                     bidim=idim,
                     bunits=bunits,
@@ -221,6 +230,167 @@ class Frontend(nn.Module):
                         beamformer_type=getattr(args, "uf_beamformer_type", "shengdai"),
                         beamformer_return_mask=getattr(args, "uf_beamformer_return_mask", False),
                     )
+                elif getattr(args, "use_cnn_front_attention_mean", False):
+                    from espnet.nets.pytorch_backend.frontends.cnn_front_attention_mean import CNN_Front_Attention_Mean
+                    self.beamformer = CNN_Front_Attention_Mean(
+                        conv_layer_list=cb_conv_layer_list,
+                        inplane=cb_inplane,
+                        use_dilation=args.cb_dilation_replace_stride,
+                        n_att_head=args.uf_n_att_head,
+                        n_att_blocks=args.uf_n_att_blocks,
+                        n_channel_att_blocks=args.uf_n_channel_att_blocks,
+                        n_time_att_blocks=args.uf_n_time_att_blocks,
+                        fft_feat=args.uf_n_fft_feat,
+                        att_feat=args.uf_n_att_feat,
+                        dropout_rate=args.dropout_rate,
+                        reduce_method=getattr(args, "uf_reduce_method", "mask"),
+                        use_residual=getattr(args, "uf_use_residual", True),
+                        use_sub_sampling=getattr(args, "uf_use_subsampling", False),
+                        downconv_type=getattr(args, "uf_downconv_type", "conv1d"),
+                        use_time_high_dim_as_v=getattr(args, "uf_use_time_high_dim_as_v", False),
+                        use_pos_embed=getattr(args, "uf_use_pos_embed", True),
+                        pos_embed_type=getattr(args, "uf_pos_embed_type", "2D"),
+                        beamformer_type=getattr(args, "uf_beamformer_type", "shengdai"),
+                        beamformer_return_mask=getattr(args, "uf_beamformer_return_mask", False),
+                        use_abs_pos_pred=getattr(args, "uf_use_abs_pos_pred", True),
+                        num_abs_pos_extracted=getattr(args, "uf_num_abs_pos_extracted", 1),
+                        attention_method=getattr(args, "uf_attention_method", "channel_wise_att"),
+                        power_att_window_len=getattr(args, "uf_power_att_window_len", 2),
+                        power_att_affine=getattr(args, "uf_power_att_affine", False),
+                        power_att_softmax_factor=getattr(args, "uf_power_att_softmax_factor", 1.0),
+                        power_att_auto_grad_softmax_factor=getattr(args, "uf_power_att_auto_grad_softmax_factor", False),
+                        power_att_use_delta_power_att=getattr(args, "uf_power_att_use_delta_power_att", False), 
+                        power_att_auto_grad_delta_factor=getattr(args, "uf_power_att_auto_grad_delta_factor", True),
+                        power_att_delta_factor=getattr(args, "uf_power_att_delta_factor", 3.0),
+                        power_att_delta_pos=getattr(args, "uf_power_att_delta_pos", 4),
+                        abs_pos_loss_factor=getattr(args, "uf_abs_pos_loss_factor", 50.),
+                        use_pos_embed_in_beamform_layer=getattr(args, "uf_use_pos_embed_in_beamform_layer", False),
+                        conv_layer_dilation=eval(getattr(args, "cb_conv_layer_dilation", "[1]*8")),
+                    )
+                elif getattr(args, "use_cnn_front_attention_mean_no_padding", False):
+                    from espnet.nets.pytorch_backend.frontends.cnn_front_attention_mean_no_padding import CNN_Front_Attention_Mean
+                    self.beamformer = CNN_Front_Attention_Mean(
+                        conv_layer_list=cb_conv_layer_list if isinstance(cb_conv_layer_list, list) else eval(cb_conv_layer_list),
+                        inplane=cb_inplane,
+                        use_dilation=args.cb_dilation_replace_stride,
+                        n_att_head=args.uf_n_att_head,
+                        n_att_blocks=args.uf_n_att_blocks,
+                        n_channel_att_blocks=args.uf_n_channel_att_blocks,
+                        n_time_att_blocks=args.uf_n_time_att_blocks,
+                        fft_feat=args.uf_n_fft_feat,
+                        att_feat=args.uf_n_att_feat,
+                        dropout_rate=getattr(args, "dropout_rate", 0),
+                        reduce_method=getattr(args, "uf_reduce_method", "mask"),
+                        use_residual=getattr(args, "uf_use_residual", True),
+                        use_sub_sampling=getattr(args, "uf_use_subsampling", False),
+                        downconv_type=getattr(args, "uf_downconv_type", "conv1d"),
+                        use_time_high_dim_as_v=getattr(args, "uf_use_time_high_dim_as_v", False),
+                        use_pos_embed=getattr(args, "uf_use_pos_embed", True),
+                        pos_embed_type=getattr(args, "uf_pos_embed_type", "2D"),
+                        beamformer_type=getattr(args, "uf_beamformer_type", "shengdai"),
+                        beamformer_return_mask=getattr(args, "uf_beamformer_return_mask", False),
+                        use_abs_pos_pred=getattr(args, "uf_use_abs_pos_pred", True),
+                        num_abs_pos_extracted=getattr(args, "uf_num_abs_pos_extracted", 1),
+                        attention_method=getattr(args, "uf_attention_method", "channel_wise_att"),
+                        power_att_window_len=getattr(args, "uf_power_att_window_len", 2),
+                        power_att_affine=getattr(args, "uf_power_att_affine", False),
+                        power_att_softmax_factor=getattr(args, "uf_power_att_softmax_factor", 1.0),
+                        power_att_auto_grad_softmax_factor=getattr(args, "uf_power_att_auto_grad_softmax_factor", False),
+                        power_att_use_delta_power_att=getattr(args, "uf_power_att_use_delta_power_att", False), 
+                        power_att_auto_grad_delta_factor=getattr(args, "uf_power_att_auto_grad_delta_factor", True),
+                        power_att_delta_factor=getattr(args, "uf_power_att_delta_factor", 3.0),
+                        power_att_delta_pos=getattr(args, "uf_power_att_delta_pos", 4),
+                        abs_pos_loss_factor=getattr(args, "uf_abs_pos_loss_factor", 50.),
+                        use_pos_embed_in_beamform_layer=getattr(args, "uf_use_pos_embed_in_beamform_layer", False),
+                        conv_layer_dilation=eval(getattr(args, "cb_conv_layer_dilation", "[1]*8")),
+                        no_residual=getattr(args, "cb_conv_layer_no_residual_connect", False),
+                        no_residual_no_padding=getattr(args, "cb_conv_layer_no_residual_no_padding", False),
+                    )
+                elif getattr(args, "use_mimo_frontend", False):
+                    from espnet.nets.pytorch_backend.frontends.mimo_frontend import MIMO_Frontend
+                    self.beamformer = MIMO_Frontend(
+                        conv_layer_list=cb_conv_layer_list,
+                        inplane=cb_inplane,
+                        use_dilation=args.cb_dilation_replace_stride,
+                        n_att_head=args.uf_n_att_head,
+                        n_att_blocks=args.uf_n_att_blocks,
+                        n_channel_att_blocks=args.uf_n_channel_att_blocks,
+                        n_time_att_blocks=args.uf_n_time_att_blocks,
+                        fft_feat=args.uf_n_fft_feat,
+                        att_feat=args.uf_n_att_feat,
+                        att_forward_feat=getattr(args,"uf_n_att_forward_feat", 2048),
+                        dropout_rate=getattr(args, "dropout_rate", 0),
+                        reduce_method=getattr(args, "uf_reduce_method", "mask"),
+                        use_residual=getattr(args, "uf_use_residual", True),
+                        use_sub_sampling=getattr(args, "uf_use_subsampling", False),
+                        downconv_type=getattr(args, "uf_downconv_type", "conv1d"),
+                        use_time_high_dim_as_v=getattr(args, "uf_use_time_high_dim_as_v", False),
+                        use_pos_embed=getattr(args, "uf_use_pos_embed", True),
+                        pos_embed_type=getattr(args, "uf_pos_embed_type", "2D"),
+                        beamformer_type=getattr(args, "uf_beamformer_type", "shengdai"),
+                        beamformer_return_mask=getattr(args, "uf_beamformer_return_mask", False),
+                        use_abs_pos_pred=getattr(args, "uf_use_abs_pos_pred", True),
+                        num_abs_pos_extracted=getattr(args, "uf_num_abs_pos_extracted", 1),
+                        attention_method=getattr(args, "uf_attention_method", "channel_wise_att"),
+                        power_att_window_len=getattr(args, "uf_power_att_window_len", 2),
+                        power_att_affine=getattr(args, "uf_power_att_affine", False),
+                        power_att_softmax_factor=getattr(args, "uf_power_att_softmax_factor", 1.0),
+                        power_att_auto_grad_softmax_factor=getattr(args, "uf_power_att_auto_grad_softmax_factor", False),
+                        power_att_use_delta_power_att=getattr(args, "uf_power_att_use_delta_power_att", False), 
+                        power_att_auto_grad_delta_factor=getattr(args, "uf_power_att_auto_grad_delta_factor", True),
+                        power_att_delta_factor=getattr(args, "uf_power_att_delta_factor", 3.0),
+                        power_att_delta_pos=getattr(args, "uf_power_att_delta_pos", 4),
+                        abs_pos_loss_factor=getattr(args, "uf_abs_pos_loss_factor", 50.),
+                        use_pos_embed_in_beamform_layer=getattr(args, "uf_use_pos_embed_in_beamform_layer", False),
+                        conv_layer_dilation=eval(getattr(args, "cb_conv_layer_dilation", "[1]*8")),
+                        no_residual=getattr(args, "cb_conv_layer_no_residual_connect", False),
+                        no_residual_no_padding=getattr(args, "cb_conv_layer_no_residual_no_padding", False),
+                        mimo_apply_spk_sep=getattr(args, "mimo_apply_spk_sep", False),
+                        mimo_cluster_noise_dim=getattr(args, "mimo_cluster_noise_dim", True),
+                        mimo_num_spk=getattr(args, "mimo_num_spk", 2),
+                        mimo_cluster_reduce_method=getattr(args, "mimo_cluster_reduce_method", "softmax"),
+                        mimo_cluster_assign_labels=getattr(args, "mimo_cluster_assign_labels", "discretize")
+                    )
+                elif getattr(args, "use_cnn_front_attention_mean_dilation_res", False):
+                    from espnet.nets.pytorch_backend.frontends.cnn_front_attention_mean_dilation_res import CNN_Front_Attention_Mean
+                    self.beamformer = CNN_Front_Attention_Mean(
+                        conv_layer_list=cb_conv_layer_list,
+                        inplane=cb_inplane,
+                        use_dilation=args.cb_dilation_replace_stride,
+                        n_att_head=args.uf_n_att_head,
+                        n_att_blocks=args.uf_n_att_blocks,
+                        n_channel_att_blocks=args.uf_n_channel_att_blocks,
+                        n_time_att_blocks=args.uf_n_time_att_blocks,
+                        fft_feat=args.uf_n_fft_feat,
+                        att_feat=args.uf_n_att_feat,
+                        dropout_rate=args.dropout_rate,
+                        reduce_method=getattr(args, "uf_reduce_method", "mask"),
+                        use_residual=getattr(args, "uf_use_residual", True),
+                        use_sub_sampling=getattr(args, "uf_use_subsampling", False),
+                        downconv_type=getattr(args, "uf_downconv_type", "conv1d"),
+                        use_time_high_dim_as_v=getattr(args, "uf_use_time_high_dim_as_v", False),
+                        use_pos_embed=getattr(args, "uf_use_pos_embed", True),
+                        pos_embed_type=getattr(args, "uf_pos_embed_type", "2D"),
+                        beamformer_type=getattr(args, "uf_beamformer_type", "shengdai"),
+                        beamformer_return_mask=getattr(args, "uf_beamformer_return_mask", False),
+                        use_abs_pos_pred=getattr(args, "uf_use_abs_pos_pred", True),
+                        num_abs_pos_extracted=getattr(args, "uf_num_abs_pos_extracted", 1),
+                        attention_method=getattr(args, "uf_attention_method", "channel_wise_att"),
+                        power_att_window_len=getattr(args, "uf_power_att_window_len", 2),
+                        power_att_affine=getattr(args, "uf_power_att_affine", False),
+                        power_att_softmax_factor=getattr(args, "uf_power_att_softmax_factor", 1.0),
+                        power_att_auto_grad_softmax_factor=getattr(args, "uf_power_att_auto_grad_softmax_factor", False),
+                        power_att_use_delta_power_att=getattr(args, "uf_power_att_use_delta_power_att", False), 
+                        power_att_auto_grad_delta_factor=getattr(args, "uf_power_att_auto_grad_delta_factor", True),
+                        power_att_delta_factor=getattr(args, "uf_power_att_delta_factor", 3.0),
+                        power_att_delta_pos=getattr(args, "uf_power_att_delta_pos", 4),
+                        abs_pos_loss_factor=getattr(args, "uf_abs_pos_loss_factor", 50.),
+                        use_pos_embed_in_beamform_layer=getattr(args, "uf_use_pos_embed_in_beamform_layer", False),
+                        conv_layer_dilation=eval(getattr(args, "cb_conv_layer_dilation", "[1]*8")),
+                        no_residual=getattr(args, "cb_conv_layer_no_residual_connect", False),
+                        add_orig_spectrum_to_mid=getattr(args, "cb_add_orig_spectrum_to_mid", -1),
+                        use_freq_embedding=getattr(args, "cb_use_freq_embedding", False),
+                    )
                 else:
                     from espnet.nets.pytorch_backend.frontends.universal_frontend import Universal_Frontend
                     self.beamformer = Universal_Frontend(
@@ -284,49 +454,70 @@ class Frontend(nn.Module):
 
             # randomly pick given number of channels of audio into frontend
             if self.random_pick_channel != 0 and self.training:
-                if self.use_complex_beamformer or self.use_universal_beamformer:
-                    C = h.shape[1] # B C T F
-                    if C==1:
-                        pass
-                    elif self.random_pick_channel == 2:
-                        h = h.index_select(1, torch.randperm(C).cuda()[0:2])   # We use 1,3 microphone for 2 mic track; Actually the 2nd channel here is correspond to the 3th mic.
-                    else:
-                        if self.random_pick_channel > 0:
-                            num_channels = self.random_pick_channel
-                        elif self.random_pick_channel == -1:
-                            num_channels = int(torch.randint(2, C+1, (1,)))
-                        elif self.random_pick_channel == -2:
-                            num_channels = int(torch.randint(1, C+1, (1,)))
-                        elif self.random_pick_channel == -3:
-                            num_channels = C if numpy.random.randint(2) == 0 else 1 
-                        else:
-                            raise ValueError(self.random_pick_channel)
-                        # num_channels = int(self.random_pick_channel if self.random_pick_channel > 0 else torch.randint(2, C+1, (1,)))
-                        channel_setoff = torch.randint(0, C-num_channels+1, (1,))
-                        h = h[:, channel_setoff: channel_setoff+num_channels]
-
+                C = h.shape[2] # B T C F
+                if C==1:
+                    pass
+                elif self.random_pick_channel == 2:
+                    h = h.index_select(2, torch.randperm(C).cuda()[0:2])  # We use 1,3 microphone for 2 mic track
                 else:
-                    C = h.shape[2] # B T C F
-                    if C==1:
-                        pass
-                    elif self.random_pick_channel == 2:
-                        h = h.index_select(2, torch.randperm(C).cuda()[0:2])  # We use 1,3 microphone for 2 mic track
+                    # num_channels = int(self.random_pick_channel if self.random_pick_channel > 0 else torch.randint(2, C+1, (1,)))
+                    if self.random_pick_channel > 0:
+                        num_channels = self.random_pick_channel
+                    elif self.random_pick_channel == -1:
+                        num_channels = int(torch.randint(2, C+1, (1,)))
+                    elif self.random_pick_channel == -2:
+                        num_channels = int(torch.randint(1, C+1, (1,)))
+                    elif self.random_pick_channel == -3:
+                        num_channels = C if numpy.random.randint(2) == 0 else 1 
                     else:
-                        # num_channels = int(self.random_pick_channel if self.random_pick_channel > 0 else torch.randint(2, C+1, (1,)))
-                        if self.random_pick_channel > 0:
-                            num_channels = self.random_pick_channel
-                        elif self.random_pick_channel == -1:
-                            num_channels = int(torch.randint(2, C+1, (1,)))
-                        elif self.random_pick_channel == -2:
-                            num_channels = int(torch.randint(1, C+1, (1,)))
-                        elif self.random_pick_channel == -3:
-                            num_channels = C if numpy.random.randint(2) == 0 else 1 
-                        else:
-                            raise ValueError(self.random_pick_channel)
-                        # if num_channels == 1: # Baseline doesn't surpport mono-channel input, so we just skip it.
-                        #     return h, ilens, None
-                        channel_setoff = torch.randint(0, C-num_channels+1, (1,))
-                        h = h[:, :, channel_setoff: channel_setoff+num_channels]
+                        raise ValueError(self.random_pick_channel)
+                    # if num_channels == 1: # Baseline doesn't surpport mono-channel input, so we just skip it.
+                    #     return h, ilens, None
+                    channel_setoff = torch.randint(0, C-num_channels+1, (1,))
+                    h = h[:, :, channel_setoff: channel_setoff+num_channels]
+                # if self.use_complex_beamformer or self.use_universal_beamformer:
+                #     C = h.shape[1] # B C T F
+                #     if C==1:
+                #         pass
+                #     elif self.random_pick_channel == 2:
+                #         h = h.index_select(1, torch.randperm(C).cuda()[0:2])   # We use 1,3 microphone for 2 mic track; Actually the 2nd channel here is correspond to the 3th mic.
+                #     else:
+                #         if self.random_pick_channel > 0:
+                #             num_channels = self.random_pick_channel
+                #         elif self.random_pick_channel == -1:
+                #             num_channels = int(torch.randint(2, C+1, (1,)))
+                #         elif self.random_pick_channel == -2:
+                #             num_channels = int(torch.randint(1, C+1, (1,)))
+                #         elif self.random_pick_channel == -3:
+                #             num_channels = C if numpy.random.randint(2) == 0 else 1 
+                #         else:
+                #             raise ValueError(self.random_pick_channel)
+                #         # num_channels = int(self.random_pick_channel if self.random_pick_channel > 0 else torch.randint(2, C+1, (1,)))
+                #         channel_setoff = torch.randint(0, C-num_channels+1, (1,))
+                #         h = h[:, channel_setoff: channel_setoff+num_channels]
+
+                # else:
+                #     C = h.shape[2] # B T C F
+                #     if C==1:
+                #         pass
+                #     elif self.random_pick_channel == 2:
+                #         h = h.index_select(2, torch.randperm(C).cuda()[0:2])  # We use 1,3 microphone for 2 mic track
+                #     else:
+                #         # num_channels = int(self.random_pick_channel if self.random_pick_channel > 0 else torch.randint(2, C+1, (1,)))
+                #         if self.random_pick_channel > 0:
+                #             num_channels = self.random_pick_channel
+                #         elif self.random_pick_channel == -1:
+                #             num_channels = int(torch.randint(2, C+1, (1,)))
+                #         elif self.random_pick_channel == -2:
+                #             num_channels = int(torch.randint(1, C+1, (1,)))
+                #         elif self.random_pick_channel == -3:
+                #             num_channels = C if numpy.random.randint(2) == 0 else 1 
+                #         else:
+                #             raise ValueError(self.random_pick_channel)
+                #         # if num_channels == 1: # Baseline doesn't surpport mono-channel input, so we just skip it.
+                #         #     return h, ilens, None
+                #         channel_setoff = torch.randint(0, C-num_channels+1, (1,))
+                #         h = h[:, :, channel_setoff: channel_setoff+num_channels]
                     
 
             # 1. WPE

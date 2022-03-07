@@ -183,7 +183,7 @@ def main():
                             soundfile.write(owavpath, wave, rate)
                             fout.write(f"{uttid} {owavpath}\n")
                 else:
-                    wave, rate = soundfile.read(wavpath, dtype=np.int16)
+                    wave, rate = soundfile.read(wavpath) #, dtype=np.int16) GUO
                     if wave.ndim == 2 and utt2ref_channels is not None:
                         wave = wave[:, utt2ref_channels(uttid)]
                         save_asis = False
@@ -212,7 +212,7 @@ def main():
                             wave = resampy.resample(
                                 wave.astype(np.float64), rate, args.fs, axis=0
                             )
-                            wave = wave.astype(np.int16)
+                            # wave = wave.astype(np.int16) GUO
                             rate = args.fs
 
                         if args.audio_format.endswith("ark"):

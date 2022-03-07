@@ -12,8 +12,11 @@ import random
 import subprocess
 import sys
 
+from distutils.version import LooseVersion
+
 import configargparse
 import numpy as np
+import torch
 
 from espnet import __version__
 from espnet.utils.cli_utils import strtobool
@@ -273,7 +276,7 @@ def get_parser(parser=None, required=True):
         "--opt",
         default="adadelta",
         type=str,
-        choices=["adadelta", "adam", "noam"],
+        choices=["adadelta", "adam", "noam","front_back_mix"],
         help="Optimizer",
     )
     parser.add_argument(
@@ -440,6 +443,7 @@ def get_parser(parser=None, required=True):
     )
     # Beamformer related
     parser.add_argument("--use-beamformer", type=strtobool, default=True, help="")
+    parser.add_argument("--use-beamformer-guo", type=strtobool, default=False, help="")
     parser.add_argument(
         "--btype",
         default="blstmp",
@@ -483,6 +487,76 @@ def get_parser(parser=None, required=True):
         "By default, the channel is estimated by DNN.",
     )
     parser.add_argument("--bdropout-rate", type=float, default=0.0, help="")
+
+    # Complex-valued beamformer related
+    parser.add_argument("--random-pick-channel", type=int, default=0, help="randomly pick some channel to the frontend. \
+        0 means disabled, -1 means randomly select a random number(larger than 1) of channels , otherwise pick given number channels")
+    parser.add_argument("--noisy-to-backend", type=strtobool, default=False, help="")
+    parser.add_argument("--use-complex-beamformer", type=strtobool, default=False, help="")
+    parser.add_argument("--no-reverb", type=strtobool, default=False, help="")
+    parser.add_argument("--not-use-mel-transform", type=strtobool, default=False, help="")
+    parser.add_argument("--cb-down-sample", type=strtobool, default=False, help="")
+    parser.add_argument("--cb-down-sample-layer", type=str, default="[(16, 7, 2), (64, 5, 2)]", help="")
+    parser.add_argument("--complex-loss-ratio", type=float, default=0.2, help="e2e_transformer_frontend.py")
+    parser.add_argument("--cb-conv-layer-list", type=str, default="8*[257]", help="")
+    parser.add_argument("--cb-conv-layer-dilation", type=str, default="8*[1]", help="")
+    parser.add_argument("--cb-inplane", type=int, default=4, help="")
+    parser.add_argument("--cb-num-dereverb-frames", type=int, default=90, help="")
+    parser.add_argument("--cb-num-dereverb-blocks", type=int, default=3, help="")
+    parser.add_argument("--cb-use-frontend-ctc", type=strtobool, default=False, help="")
+    parser.add_argument("--cb-use-frontend-ctc-downsample", type=strtobool, default=False, help="")
+    parser.add_argument("--cb-use-dereverb-loss", type=strtobool, default=False, help="")
+    parser.add_argument("--cb-use-clean-loss", type=strtobool, default=False, help="")
+    parser.add_argument("--cb-ratio-reverb", type=float, default=0.4, help="")
+    parser.add_argument("--cb-frontend-ctc-odim", type=int, default=72, help="")
+    parser.add_argument("--cb-use-specaug-after-frontend", type=strtobool, default=False, help="")
+    parser.add_argument("--complex-counterpart", type=strtobool, default=False, help="")
+    parser.add_argument("--cb-dilation", type=strtobool, default=False, help="")
+    parser.add_argument("--cb-dilation-replace-stride", type=strtobool, default=True, help="")
+    parser.add_argument("--feature-reduce", type=strtobool, default=False, help="")
+    parser.add_argument("--mono-process", type=strtobool, default=False, help="")
+    parser.add_argument("--mono-process-type", type=int, default=1, help="")
+    parser.add_argument("--use-rand-fttransform", type=strtobool, default=False, help="")
+    parser.add_argument("--use-universal-beamformer", type=strtobool, default=False, help="")
+    parser.add_argument("--use-universal-beamformer-time-attention", type=strtobool, default=False, help="")
+    parser.add_argument("--use-universal-beamformer-src-time-attention-pos-enc", type=strtobool, default=False, help="")
+    parser.add_argument("--use-universal-beamformer-time-attention-pos-enc", type=strtobool, default=False, help="")
+    parser.add_argument("--uf-n-att-head", type=int, default=4, help="")
+    parser.add_argument("--uf-n-att-blocks", type=int, default=2, help="")
+    parser.add_argument("--uf-n-channel-att-blocks", type=int, default=2, help="")
+    parser.add_argument("--uf-n-time-att-blocks", type=int, default=2, help="")
+    parser.add_argument("--uf-n-fft-feat", type=int, default=257, help="")
+    parser.add_argument("--uf-n-att-feat", type=int, default=256, help="")
+    parser.add_argument("--uf-reduce-method", type=str, default="mask", help="")
+    parser.add_argument("--uf-use-residual", type=strtobool, default=True, help="")
+    parser.add_argument("--uf-use-subsampling", type=strtobool, default=False, help="")
+    parser.add_argument("--uf-downconv-type", type=str, default="conv1d", help="")
+    parser.add_argument("--uf-use-time-high-dim-as-v", type=strtobool, default=False, help="")
+    parser.add_argument("--uf-use-pos-embed", type=strtobool, default=True, help="")
+    parser.add_argument("--uf-use-pos-embed-in-beamform-layer", type=strtobool, default=False, help="")
+    parser.add_argument("--uf-power-att-window-len", type=int, default=2, help="")
+    parser.add_argument("--uf-power-att-affine", type=strtobool, default=False, help="")
+    parser.add_argument("--uf-power-att-softmax-factor", type=float, default=1.0, help="")
+    parser.add_argument("--uf-power-att-auto-grad-softmax-factor", type=strtobool, default=False, help="")
+    parser.add_argument("--uf-power-att-use-delta-power-att", type=strtobool, default=False, help="")
+    parser.add_argument("--uf-power-att-auto-grad-delta-factor", type=strtobool, default=True, help="")
+    parser.add_argument("--uf-power-att-delta-factor", type=float, default=3.0, help="")
+    parser.add_argument("--uf-power-att-delta-pos", type=int, default=4, help="")
+    parser.add_argument("--uf-pos-embed-type", type=str, default="2D", help="")
+    parser.add_argument("--uf-beamformer-type", type=str, default="shengdai", help="")
+    parser.add_argument("--uf-beamformer-return-mask", type=strtobool, default=False, help="")
+    parser.add_argument("--use-cnn-front-attention-mean", type=strtobool, default=False, help="")
+    parser.add_argument("--use-cnn-front-attention-mean-no-padding", type=strtobool, default=False, help="")
+    parser.add_argument("--use-cnn-front-attention-mean-dilation-res", type=strtobool, default=False, help="")
+    parser.add_argument("--uf-use-abs-pos-pred", type=strtobool, default=True, help="")
+    parser.add_argument("--uf-num-abs-pos-extracted", type=int, default=1, help="")
+    parser.add_argument("--uf-attention-method", type=str, default="channel_wise_att", help="")
+    parser.add_argument("--uf-abs-pos-loss-factor", type=float, default=50.0, help="")
+    parser.add_argument("--cb-conv-layer-no-residual-connect", type=strtobool, default=False, help="")
+    parser.add_argument("--cb-conv-layer-no-residual-no-padding", type=strtobool, default=False, help="")
+    parser.add_argument("--cb-add-orig-spectrum-to-mid", type=int, default=-1, help="")
+    parser.add_argument("--cb-use-freq-embedding", type=strtobool, default=False, help="")
+
     # Feature transform: Normalization
     parser.add_argument(
         "--stats-file",

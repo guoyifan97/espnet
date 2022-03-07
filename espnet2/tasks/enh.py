@@ -27,7 +27,10 @@ from espnet2.enh.separator.dprnn_separator import DPRNNSeparator
 from espnet2.enh.separator.neural_beamformer import NeuralBeamformer
 from espnet2.enh.separator.rnn_separator import RNNSeparator
 from espnet2.enh.separator.tcn_separator import TCNSeparator
+from espnet2.enh.separator.tcn_tac_separator import TCNTACSeparator
+from espnet2.enh.separator.dprnn_tac_separator import DPRNNTACSeparator
 from espnet2.enh.separator.transformer_separator import TransformerSeparator
+from espnet2.enh.separator.sepformer_separator import SepFormerSeparator
 from espnet2.tasks.abs_task import AbsTask
 from espnet2.torch_utils.initialize import initialize
 from espnet2.train.class_choices import ClassChoices
@@ -50,11 +53,14 @@ separator_choices = ClassChoices(
     classes=dict(
         rnn=RNNSeparator,
         tcn=TCNSeparator,
+        tcn_tac=TCNTACSeparator,
         dprnn=DPRNNSeparator,
+        dprnn_tac=DPRNNTACSeparator,
         transformer=TransformerSeparator,
         conformer=ConformerSeparator,
         wpe_beamformer=NeuralBeamformer,
         asteroid=AsteroidModel_Converter,
+        sepformer=SepFormerSeparator,
     ),
     type_check=AbsSeparator,
     default="rnn",

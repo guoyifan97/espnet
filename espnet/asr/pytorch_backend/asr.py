@@ -9,6 +9,8 @@ import json
 import logging
 import math
 import os
+import sys
+import itertools
 
 from chainer import reporter as reporter_module
 from chainer import training
@@ -54,6 +56,7 @@ from espnet.utils.training.iterators import ShufflingEnabler
 from espnet.utils.training.tensorboard_logger import TensorboardLogger
 from espnet.utils.training.train_utils import check_early_stop
 from espnet.utils.training.train_utils import set_early_stop
+from espnet.nets.pytorch_backend.nets_utils import pad_list_multichannel
 
 import matplotlib
 
@@ -131,6 +134,15 @@ class CustomEvaluator(BaseEvaluator):
 
         return summary.compute_mean()
 
+def printnan(mod):
+    if len(mod._modules) == 0:
+        # if torch.tensor()
+        print([torch.isnan(i.grad).any() if not torch.isnan(i.grad).any() else (torch.isnan(i.grad).any(), i.grad) for i in mod.parameters()])
+        return
+    for i in mod._modules.keys():
+        print("{} ".format(i), end="")
+        printnan(getattr(mod, i))
+
 
 class CustomUpdater(StandardUpdater):
     """Custom Updater for Pytorch.
@@ -169,6 +181,7 @@ class CustomUpdater(StandardUpdater):
         self.grad_noise = grad_noise
         self.iteration = 0
         self.use_apex = use_apex
+        print(self.model)
 
     # The core part of the update routine can be customized by overriding.
     def update_core(self):
@@ -181,6 +194,7 @@ class CustomUpdater(StandardUpdater):
 
         # Get the next batch (a list of json files)
         batch = train_iter.next()
+        # print("batch size is", batch.shape)
         # self.iteration += 1 # Increase may result in early report,
         # which is done in other place automatically.
         x = _recursive_to(batch, self.device)
@@ -221,14 +235,30 @@ class CustomUpdater(StandardUpdater):
             return
         self.forward_count = 0
         # compute the gradient norm to check if it is normal or not
+        # print("print grads before clip")
+        # print("print learning rate: ", [i["lr"] for i in optimizer.param_groups])
+        # # printnan(self.model)
+        # for name, p in self.model.named_parameters():
+        #     print("{} NAN test:{}".format(name, torch.isnan(p.grad).any()))
+        #     if torch.isnan(p.grad).any():
+        #         print("{} NAN test: WRONG!\nshape is {}, now print detail {}".format(name, p.grad.shape, p))
         grad_norm = torch.nn.utils.clip_grad_norm_(
             self.model.parameters(), self.grad_clip_threshold
         )
         logging.info("grad norm={}".format(grad_norm))
         if math.isnan(grad_norm):
             logging.warning("grad norm is nan. Do not update model.")
+            # print("NOW PRINT Grad of nan layers")
+            # for p in self.model.parameters():
+            #     print(torch.isnan(p.grad).any())
+            # printnan(self.model)
+            #raise
         else:
-            optimizer.step()
+            if isinstance(optimizer, list):
+                for _optimzer in optimizer:
+                    _optimzer.step()
+            else:
+                optimizer.step()
         optimizer.zero_grad()
 
     def update(self):
@@ -237,6 +267,7 @@ class CustomUpdater(StandardUpdater):
         # Ref.: https://github.com/espnet/espnet/issues/777
         if self.forward_count == 0:
             self.iteration += 1
+        #torch.cuda.empty_cache()
 
 
 class CustomConverter(object):
@@ -266,6 +297,7 @@ class CustomConverter(object):
 
         """
         # batch should be located in list
+        # load_tr(data): ( [[ndarray, ndarray, ...], [ndarray, ndarray, ...], ...], [[ndarray, ndarray, ...], [ndarray, ndarray, ...], ...], ..., [[text, text, ...], [text, text, ...], ...] ) 有tuple不是括号
         assert len(batch) == 1
         xs, ys = batch[0]
 
@@ -309,6 +341,244 @@ class CustomConverter(object):
 
         return xs_pad, ilens, ys_pad
 
+class CustomConverterComplex(object):
+    """Custom batch converter for Pytorch.
+
+    Args:
+        subsampling_factor (int): The subsampling factor.
+        dtype (torch.dtype): Data type to convert.
+
+    """
+
+    def __init__(self, subsampling_factor=1, dtype=torch.float32):
+        """Construct a CustomConverter object."""
+        self.subsampling_factor = subsampling_factor
+        self.ignore_id = -1
+        self.dtype = dtype
+
+    def __call__(self, batch, device=torch.device("cpu")):
+        """Transform a batch and send it to a device.
+
+        Args:
+            batch (list): The batch to transform.
+            device (torch.device): The device to send to.
+
+        Returns:
+            tuple(torch.Tensor, torch.Tensor, torch.Tensor)
+
+        """
+        # batch should be located in list
+        # load_tr(data): ( [ndarray, ndarray, ...], [ndarray, ndarray, ...], ..., [text, text, ...]) 有tuple不是括号,
+        # 进来的是一个batch也就是data.json的一个子集的数据。
+        # batch = [load_tr(data)]
+        assert len(batch) == 1
+        self.num_encs = len(batch[0]) - 1
+        xs_list = batch[0][: self.num_encs]
+        ys = batch[0][-1]
+
+        # perform subsampling
+        if self.subsampling_factor > 1:
+            xs_list = [
+                [x[:: self.subsampling_factors, :] for x in xs_list[i]]
+                for i in range(self.num_encs)
+            ]
+            
+        # ilens_list = [
+        #     np.array([x.shape[0] for x in xs_list[i]]) for i in range(self.num_encs)
+        # ]
+
+        # get batch of lengths of input sequences
+        ilens = np.array([x.shape[0] for x in xs_list[-1]])
+        
+
+        # perform padding and convert to tensor
+
+        if xs_list[0][0].dtype.kind == "c":
+            xs_list_pad_real = []
+            xs_list_pad_imag = []
+            if self.num_encs == 1:
+                ilens = list()
+                x_list_real = []
+                x_list_imag = []
+                for x in xs_list[0]:
+                    x = x.reshape(-1, 4, 257)
+                    ilens.append(x.shape[0])
+                    x = x.transpose((1,0,2)).contiguous()
+                    x_list_real.append(torch.from_numpy(x.real).float())
+                    x_list_imag.append(torch.from_numpy(x.imag).float())
+                xs_list_pad_real.append(pad_list_multichannel(x_list_real, 0).to(device, dtype=self.dtype))
+                xs_list_pad_imag.append(pad_list_multichannel(x_list_imag, 0).to(device, dtype=self.dtype))
+                ilens = np.array(ilens)
+            else:
+                for i in range(self.num_encs-1):
+                    x_list_real = []
+                    x_list_imag = []
+                    for x in xs_list[i]:
+                        x = x.reshape(-1, 4, 257)
+                        x = x.transpose((1,0,2)).contiguous()
+                        x_list_real.append(torch.from_numpy(x.real).float())
+                        x_list_imag.append(torch.from_numpy(x.imag).float())
+                    xs_list_pad_real.append(pad_list_multichannel(x_list_real, 0).to(device, dtype=self.dtype))
+                    xs_list_pad_imag.append(pad_list_multichannel(x_list_imag, 0).to(device, dtype=self.dtype))
+                xs_list_pad_real.append(pad_list([torch.from_numpy(x.real).float() for x in xs_list[-1]], 0).to(device, dtype=self.dtype))
+                xs_list_pad_imag.append(pad_list([torch.from_numpy(x.imag).float() for x in xs_list[-1]], 0).to(device, dtype=self.dtype))
+            
+            # Note(kamo):
+            # {'real': ..., 'imag': ...} will be changed to ComplexTensor in E2E.
+            # Don't create ComplexTensor and give it E2E here
+            # because torch.nn.DataParellel can't handle it.
+            xs_list_pad = {"real": xs_list_pad_real, "imag": xs_list_pad_imag}
+        else:
+            xs_list_pad = [
+                pad_list([torch.from_numpy(x).float() for x in xs_list[i]], 0).to(
+                    device, dtype=self.dtype
+                )
+                for i in range(self.num_encs)
+            ]
+
+        # ilens_list = [
+        #     torch.from_numpy(ilens_list[i]).to(device) for i in range(self.num_encs)
+        # ]
+        ilens = torch.from_numpy(ilens).to(device)
+        # NOTE: this is for multi-output (e.g., speech translation)
+        ys_pad = pad_list(
+            [
+                torch.from_numpy(
+                    np.array(y[0][:]) if isinstance(y, tuple) else y
+                ).long()
+                for y in ys
+            ],
+            self.ignore_id,
+        ).to(device)
+
+        return xs_list_pad, ilens, ys_pad # xs_list_pad: Dict{"real": List[ndarry], "imag": List[ndarray]}
+
+class CustomConverterComplexFrontendCTC(object):
+    """Custom batch converter for Pytorch.
+
+    Args:
+        subsampling_factor (int): The subsampling factor.
+        dtype (torch.dtype): Data type to convert.
+
+    """
+
+    def __init__(self, subsampling_factor=1, dtype=torch.float32):
+        """Construct a CustomConverter object."""
+        self.subsampling_factor = subsampling_factor
+        self.ignore_id = -1
+        self.dtype = dtype
+
+    def __call__(self, batch, device=torch.device("cpu")):
+        """Transform a batch and send it to a device.
+
+        Args:
+            batch (list): The batch to transform.
+            device (torch.device): The device to send to.
+
+        Returns:
+            tuple(torch.Tensor, torch.Tensor, torch.Tensor)
+
+        """
+        # batch should be located in list
+        # load_tr(data): ( [ndarray, ndarray, ...], [ndarray, ndarray, ...], ..., [text, text, ...]) 有tuple不是括号,
+        # 进来的是一个batch也就是data.json的一个子集的数据。
+        
+        ## NOTE: batch = [load_tr(data)]
+        assert len(batch) == 1
+        self.num_encs = len(batch[0]) - 2 # 最后两个分别是phone和text
+        xs_list = batch[0][: self.num_encs]
+        ys_text = batch[0][-2]
+        ys_ctc  = batch[0][-1]
+
+        # perform subsampling
+        if self.subsampling_factor > 1:
+            xs_list = [
+                [x[:: self.subsampling_factors, :] for x in xs_list[i]]
+                for i in range(self.num_encs)
+            ]
+            
+        # ilens_list = [
+        #     np.array([x.shape[0] for x in xs_list[i]]) for i in range(self.num_encs)
+        # ]
+
+        # get batch of lengths of input sequences
+        ilens = np.array([x.shape[0] for x in xs_list[-1]])
+        
+
+        # perform padding and convert to tensor
+
+        if xs_list[0][0].dtype.kind == "c":
+            xs_list_pad_real = []
+            xs_list_pad_imag = []
+            if self.num_encs == 1:
+                # ilens = list()
+                x_list_real = []
+                x_list_imag = []
+                for x in xs_list[0]:
+                    # if len(x.shape)==2:
+                    #     x = x.reshape(-1, 4, 257)
+                    # ilens.append(x.shape[0])
+                    x = x.transpose((1,0,2)).contiguous()
+                    x_list_real.append(torch.from_numpy(x.real).float())
+                    x_list_imag.append(torch.from_numpy(x.imag).float())
+                xs_list_pad_real.append(pad_list_multichannel(x_list_real, 0).to(device, dtype=self.dtype))
+                xs_list_pad_imag.append(pad_list_multichannel(x_list_imag, 0).to(device, dtype=self.dtype))
+                # ilens = np.array(ilens)
+            else:
+                for i in range(self.num_encs-1):
+                    x_list_real = []
+                    x_list_imag = []
+                    for x in xs_list[i]:
+                        # if len(x.shape)==2:
+                        #     x = x.reshape(-1, 4, 257)
+                        x = x.transpose((1,0,2)).contiguous()
+                        x_list_real.append(torch.from_numpy(x.real).float())
+                        x_list_imag.append(torch.from_numpy(x.imag).float())
+                    xs_list_pad_real.append(pad_list_multichannel(x_list_real, 0).to(device, dtype=self.dtype))
+                    xs_list_pad_imag.append(pad_list_multichannel(x_list_imag, 0).to(device, dtype=self.dtype))
+                xs_list_pad_real.append(pad_list([torch.from_numpy(x.real).float() for x in xs_list[-1]], 0).to(device, dtype=self.dtype))
+                xs_list_pad_imag.append(pad_list([torch.from_numpy(x.imag).float() for x in xs_list[-1]], 0).to(device, dtype=self.dtype))
+            
+            # Note(kamo):
+            # {'real': ..., 'imag': ...} will be changed to ComplexTensor in E2E.
+            # Don't create ComplexTensor and give it E2E here
+            # because torch.nn.DataParellel can't handle it.
+            xs_list_pad = {"real": xs_list_pad_real, "imag": xs_list_pad_imag}
+        else:
+            xs_list_pad = [
+                pad_list_multichannel([torch.from_numpy(x.transpose((1,0,2)).contiguous()).float() for x in xs_list[i]], 0).to(
+                    device, dtype=self.dtype
+                )
+                for i in range(self.num_encs)
+            ]
+
+        # ilens_list = [
+        #     torch.from_numpy(ilens_list[i]).to(device) for i in range(self.num_encs)
+        # ]
+        ilens = torch.from_numpy(ilens).to(device)
+        # NOTE: this is for multi-output (e.g., speech translation)
+        ys_list_pad = [
+                pad_list(
+                [
+                    torch.from_numpy(
+                        np.array(y[0][:]) if isinstance(y, tuple) else y
+                    ).long()
+                    for y in ys_text
+                ],
+                self.ignore_id,
+            ).to(device),
+                pad_list(
+                [
+                    torch.from_numpy(
+                        np.array(y[0][:]) if isinstance(y, tuple) else y
+                    ).long()
+                    for y in ys_ctc
+                ],
+                self.ignore_id,
+            ).to(device),
+        ]
+
+        return xs_list_pad, ilens, ys_list_pad # xs_list_pad: Dict{"real": List[ndarry], "imag": List[ndarray]}
 
 class CustomConverterMulEnc(object):
     """Custom batch converter for Pytorch in multi-encoder case.
@@ -490,6 +760,7 @@ def train(args):
     model = model.to(device=device, dtype=dtype)
 
     if args.freeze_mods:
+        print("freeze")
         model, model_params = freeze_modules(model, args.freeze_mods)
     else:
         model_params = model.parameters()
@@ -513,7 +784,6 @@ def train(args):
         optimizer = torch.optim.Adam(model_params, weight_decay=args.weight_decay)
     elif args.opt == "noam":
         from espnet.nets.pytorch_backend.transformer.optimizer import get_std_opt
-
         if "transducer" in mtl_mode:
             if args.noam_adim > 0:
                 optimizer = get_std_opt(
@@ -531,8 +801,19 @@ def train(args):
                 args.transformer_warmup_steps,
                 args.transformer_lr,
             )
+    elif args.opt == "front_back_mix":
+        from espnet.nets.pytorch_backend.transformer.optimizer import get_mix_opt
+        frontend_params = itertools.chain(model.frontend.parameters(), model.feature_transform.parameters())
+        if hasattr(model.decoder, "parameters"):
+            backend_params = itertools.chain(model.encoder.parameters(), model.decoder.parameters(), model.ctc.parameters(), model.criterion.parameters())
+        else:
+            backend_params = itertools.chain(model.encoder.parameters(), model.ctc.parameters())
+        optimizer = get_mix_opt(
+            frontend_params, backend_params, args.adim, args.transformer_warmup_steps, args.transformer_lr
+        )
     else:
         raise NotImplementedError("unknown optimizer: " + args.opt)
+        
 
     # setup apex.amp
     if args.train_dtype in ("O0", "O1", "O2", "O3"):
@@ -547,6 +828,10 @@ def train(args):
         if args.opt == "noam":
             model, optimizer.optimizer = amp.initialize(
                 model, optimizer.optimizer, opt_level=args.train_dtype
+            )
+        elif args.opt == "front_back_mix":
+            model, [optimizer.frontend_optimizer, optimizer.backend_optimizer] = amp.initialize(
+                model, [optimizer.frontend_optimizer, optimizer.backend_optimizer], opt_level=args.train_dtype
             )
         else:
             model, optimizer = amp.initialize(
@@ -568,7 +853,16 @@ def train(args):
 
     # Setup a converter
     if args.num_encs == 1:
-        converter = CustomConverter(subsampling_factor=model.subsample[0], dtype=dtype)
+        if args.cb_use_frontend_ctc:
+            converter = CustomConverterComplexFrontendCTC(subsampling_factor=model.subsample[0], dtype=dtype)
+        else:
+            converter = CustomConverter(subsampling_factor=model.subsample[0], dtype=dtype, )
+        # if not args.use_complex_beamformer:
+        #     converter = CustomConverter(subsampling_factor=model.subsample[0], dtype=dtype)
+        # elif args.cb_use_frontend_ctc:
+        #     converter = CustomConverterComplexFrontendCTC(subsampling_factor=model.subsample[0], dtype=dtype)
+        # else:
+        #     converter = CustomConverterComplex(subsampling_factor=model.subsample[0], dtype=dtype)
     else:
         converter = CustomConverterMulEnc(
             [i[0] for i in model.subsample_list], dtype=dtype
@@ -582,6 +876,7 @@ def train(args):
 
     use_sortagrad = args.sortagrad == -1 or args.sortagrad > 0
     # make minibatch list (variable length)
+    # train: # batch: List(num_batches)[[Tuple[str(uttid), dict(json,feat,name,shape...)]],[Tuple[str(uttid), dict(json,feat,name,shape...)]], ...]
     train = make_batchset(
         train_json,
         args.batch_size,
@@ -614,6 +909,7 @@ def train(args):
         oaxis=0,
     )
 
+    # load_tr(data): ( [[ndarray, ndarray, ...], [ndarray, ndarray, ...], ...], [[ndarray, ndarray, ...], [ndarray, ndarray, ...], ...], ..., [[text, text, ...], [text, text, ...], ...] ) 有tuple不是括号
     load_tr = LoadInputsAndTargets(
         mode="asr",
         load_output=True,
@@ -630,6 +926,7 @@ def train(args):
     # actual bathsize is included in a list
     # default collate function converts numpy array to pytorch tensor
     # we used an empty collate function instead which returns list
+    # load_tr(data): ([ndarray, ndarray, ...], [ndarray, ndarray, ...], ..., [text, text, ...]) 有tuple不是括号
     train_iter = ChainerDataLoader(
         dataset=TransformDataset(train, lambda data: converter([load_tr(data)])),
         batch_size=1,
@@ -669,8 +966,9 @@ def train(args):
     if args.resume:
         logging.info("resumed from %s" % args.resume)
         torch_resume(args.resume, trainer)
+        # optimizer._step = 5100
 
-    # Evaluate the model with the test dataset for each epoch
+    # Evaluate the model with the test dataset for each epoch GUO
     if args.save_interval_iters > 0:
         trainer.extend(
             CustomEvaluator(model, {"main": valid_iter}, reporter, device, args.ngpu),
@@ -740,7 +1038,7 @@ def train(args):
     else:
         ctc_reporter = None
 
-    # Make a plot for training and validation values
+    # Make a plot for training and validation values GUO
     if args.num_encs > 1:
         report_keys_loss_ctc = [
             "main/loss_ctc{}".format(i + 1) for i in range(model.num_encs)
@@ -830,7 +1128,7 @@ def train(args):
         )
     )
 
-    # Save best models
+    # Save best models GUO
     trainer.extend(
         snapshot_object(model, "model.loss.best"),
         trigger=training.triggers.MinValueTrigger("validation/main/loss"),
@@ -952,7 +1250,7 @@ def train(args):
     )
 
     trainer.extend(extensions.ProgressBar(update_interval=args.report_interval_iters))
-    set_early_stop(trainer, args)
+    set_early_stop(trainer, args) # GUO
 
     if args.tensorboard_dir is not None and args.tensorboard_dir != "":
         trainer.extend(
@@ -1112,6 +1410,12 @@ def recog(args):
                     if args.num_encs == 1
                     else [feat[idx][0] for idx in range(model.num_encs)]
                 )
+                # GUO print
+                # logging.warning("feat.__class__, {}".format(feat.__class__))
+                # # print("feat.__class__, {}".format(feat.__class__))
+                # if isinstance(feat, np.ndarray):
+                #     logging.warning("feat.dtype is {}".format(feat.dtype))
+                #     print("feat.dtype is {}".format(feat.dtype))
                 if args.streaming_mode == "window" and args.num_encs == 1:
                     logging.info(
                         "Using streaming recognizer with window size %d frames",

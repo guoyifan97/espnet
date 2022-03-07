@@ -86,8 +86,10 @@ class RNNP(torch.nn.Module):
             projection_layer = getattr(self, "bt%d" % layer)
             projected = projection_layer(ys_pad.contiguous().view(-1, ys_pad.size(2)))
             xs_pad = projected.view(ys_pad.size(0), ys_pad.size(1), -1)
-            if layer < self.elayers - 1:
+            if self.training and layer < self.elayers - 1:
                 xs_pad = torch.tanh(F.dropout(xs_pad, p=self.dropout))
+            else:
+                xs_pad = torch.tanh(xs_pad)
 
         return xs_pad, ilens, elayer_states  # x: utt list of frame x dim
 

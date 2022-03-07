@@ -60,6 +60,35 @@ def pad_list(xs, pad_value):
 
     return pad
 
+def pad_list_multichannel(xs, pad_value):
+    """Perform padding for the list of tensors.
+    B CTF
+
+    Args:
+        xs (List): List of Tensors [(C, T_1, `*`), (C, T_2, `*`), ..., (C, T_B, `*`)].
+        pad_value (float): Value for padding.
+
+    Returns:
+        Tensor: Padded tensor (B, Tmax, `*`).
+
+    Examples:
+        >>> x = [torch.ones(4), torch.ones(2), torch.ones(1)]
+        >>> x
+        [tensor([1., 1., 1., 1.]), tensor([1., 1.]), tensor([1.])]
+        >>> pad_list(x, 0)
+        tensor([[1., 1., 1., 1.],
+                [1., 1., 0., 0.],
+                [1., 0., 0., 0.]])
+
+    """
+    n_batch = len(xs)
+    max_len = max(x.size(1) for x in xs)
+    pad = xs[0].new(n_batch, xs[0].size()[0], max_len, *xs[0].size()[2:]).fill_(pad_value)
+    for i in range(n_batch):
+        pad[i, :, : xs[i].size(1)] = xs[i]
+
+    return pad
+
 
 def make_pad_mask(lengths, xs=None, length_dim=-1):
     """Make mask tensor containing indices of padded part.

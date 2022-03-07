@@ -13,6 +13,8 @@ from espnet.nets.pytorch_backend.frontends.beamformer import (
 )
 from espnet.nets.pytorch_backend.frontends.mask_estimator import MaskEstimator
 
+import logging
+
 is_torch_1_2_plus = LooseVersion(torch.__version__) >= LooseVersion("1.2.0")
 is_torch_1_3_plus = LooseVersion(torch.__version__) >= LooseVersion("1.3.0")
 
@@ -55,8 +57,10 @@ def get_mvdr_vector(
         psd_n = psd_n + reg_coeff_tensor
         psd_n_i = psd_n.inverse()
         
-    except:
-        print("THIS M WRONG",psd_n)
+    except Exception:
+        # print("THIS M WRONG",psd_n)
+        # raise Exception(f"THIS M WRONG: {psd_n}")
+        logging.warn(f"THIS M WRONG: {psd_n}")
         try:
             reg_coeff_tensor = ComplexTensor(torch.rand_like(psd_n.real),
             torch.rand_like(psd_n.real))*1e-2
@@ -68,16 +72,17 @@ def get_mvdr_vector(
                     print("beamformer.py nan_test psd_n: WRONG", psd_n)
                 print("beamformer.py nan_test reg_coeff", torch.tensor([torch.isnan(reg_coeff_tensor.real).any(), torch.isnan(reg_coeff_tensor.imag).any()]).any())
                 if torch.tensor([torch.isnan(reg_coeff_tensor.real).any(), torch.isnan(reg_coeff_tensor.imag).any()]).any():
-                    print("beamformer.py nan_test reg_coeff: WRONG", reg_coeff)
+                    print("beamformer.py nan_test reg_coeff: WRONG", reg_coeff_tensor)
             psd_n += reg_coeff_tensor
             psd_n_i = psd_n.inverse()
-            if psd_n.real.device.index==0:
-                print("beamformer.py nan_test psd_n + reg", torch.tensor([torch.isnan(psd_n.real).any(), torch.isnan(psd_n.imag).any()]).any())
+            # if psd_n.real.device.index==0:
+            if True:
+                logging.info(f"beamformer.py nan_test psd_n + reg, {torch.tensor([torch.isnan(psd_n.real).any(), torch.isnan(psd_n.imag).any()]).any()}")
                 if torch.tensor([torch.isnan(psd_n.real).any(), torch.isnan(psd_n.imag).any()]).any():
-                    print("beamformer.py nan_test psd_n + reg: WRONG", psd_n)
-                print("beamformer.py nan_test psd_n_i", torch.tensor([torch.isnan(psd_n_i.real).any(), torch.isnan(psd_n_i.imag).any()]).any())
+                    logging.info(f"beamformer.py nan_test psd_n + reg: WRONG, {psd_n}")
+                logging.info(f"beamformer.py nan_test psd_n_i, {torch.tensor([torch.isnan(psd_n_i.real).any(), torch.isnan(psd_n_i.imag).any()]).any()}")
                 if torch.tensor([torch.isnan(psd_n_i.real).any(), torch.isnan(psd_n_i.imag).any()]).any():
-                    print("beamformer.py nan_test psd_n_i: WRONG", psd_n_i)
+                    logging.info(f"beamformer.py nan_test psd_n_i: WRONG, {psd_n_i}")
         except:
             # try:
             #     reg_coeff_tensor = ComplexTensor(torch.rand_like(psd_n.real),
@@ -93,22 +98,25 @@ def get_mvdr_vector(
             temp = torch.max(psd_n.real.abs().max(), psd_n.imag.abs().max())
             psd_n = psd_n / temp
             psd_s = psd_s / temp
-            if psd_n.real.device.index==0:
-                print("beamformer.py nan_test psd_n", torch.tensor([torch.isnan(psd_n.real).any(), torch.isnan(psd_n.imag).any()]).any())
+            # if psd_n.real.device.index==0:
+            if True:
+                logging.info(f"beamformer.py nan_test psd_n, {torch.tensor([torch.isnan(psd_n.real).any(), torch.isnan(psd_n.imag).any()]).any()}")
                 if torch.tensor([torch.isnan(psd_n.real).any(), torch.isnan(psd_n.imag).any()]).any():
-                    print("beamformer.py nan_test psd_n: WRONG", psd_n)
-                print("beamformer.py nan_test reg_coeff", torch.tensor([torch.isnan(reg_coeff_tensor.real).any(), torch.isnan(reg_coeff_tensor.imag).any()]).any())
+                    ("beamformer.py nan_test psd_n: WRONG", psd_n)
+                logging.info(f"beamformer.py nan_test reg_coeff, {torch.tensor([torch.isnan(reg_coeff_tensor.real).any(), torch.isnan(reg_coeff_tensor.imag).any()]).any()}")
                 if torch.tensor([torch.isnan(reg_coeff_tensor.real).any(), torch.isnan(reg_coeff_tensor.imag).any()]).any():
-                    print("beamformer.py nan_test reg_coeff: WRONG", reg_coeff)
+                    logging.info(f"beamformer.py nan_test reg_coeff: WRONG, {reg_coeff_tensor}")
             psd_n += reg_coeff_tensor
             psd_n_i = psd_n.inverse()
-            if psd_n.real.device.index==0:
-                print("beamformer.py nan_test psd_n + reg", torch.tensor([torch.isnan(psd_n.real).any(), torch.isnan(psd_n.imag).any()]).any())
+            # if psd_n.real.device.index==0:
+            if True:
+                logging.warn(f"beamformer.py nan_test psd_n + reg,{torch.tensor([torch.isnan(psd_n.real).any(), torch.isnan(psd_n.imag).any()]).any()}")
+                logging.info(f"beamformer.py nan_test psd_n + reg, {torch.tensor([torch.isnan(psd_n.real).any(), torch.isnan(psd_n.imag).any()]).any()}")
                 if torch.tensor([torch.isnan(psd_n.real).any(), torch.isnan(psd_n.imag).any()]).any():
-                    print("beamformer.py nan_test psd_n + reg: WRONG", psd_n)
-                print("beamformer.py nan_test psd_n_i", torch.tensor([torch.isnan(psd_n_i.real).any(), torch.isnan(psd_n_i.imag).any()]).any())
+                    logging.info(f"beamformer.py nan_test psd_n + reg: WRONG, {psd_n}")
+                logging.info(f"beamformer.py nan_test psd_n_i, {torch.tensor([torch.isnan(psd_n_i.real).any(), torch.isnan(psd_n_i.imag).any()]).any()}")
                 if torch.tensor([torch.isnan(psd_n_i.real).any(), torch.isnan(psd_n_i.imag).any()]).any():
-                    print("beamformer.py nan_test psd_n_i: WRONG", psd_n_i)
+                    logging.info(f"beamformer.py nan_test psd_n_i: WRONG, {psd_n_i}")
 
     numerator = FC.einsum('...ec,...cd->...ed', [psd_n_i, psd_s])
 
@@ -178,13 +186,13 @@ class DNN_Beamformer_V2(torch.nn.Module):
             # u: (B, C)
             if self.ref_channel < 0:
                 u, _ = self.ref(psd_speech, ilens)
-                if u.device.index == 0:
-                    print("reference u nan test:", torch.isnan(u).any())
-                for i, p in enumerate(self.ref.parameters()):
-                    if p.device.index==0:
-                        print("ref parameters", i, "nantest", torch.isnan(p).any(),torch.isnan(p).all())
-                    if i > 8:
-                        break
+                # if u.device.index == 0:
+                #     print("reference u nan test:", torch.isnan(u).any())
+                # for i, p in enumerate(self.ref.parameters()):
+                #     if p.device.index==0:
+                #         print("ref parameters", i, "nantest", torch.isnan(p).any(),torch.isnan(p).all())
+                #     if i > 8:
+                #         break
             else:
                 # (optional) Create onehot vector for fixed reference microphone
                 u = torch.zeros(
@@ -207,18 +215,18 @@ class DNN_Beamformer_V2(torch.nn.Module):
 
 
         # mask: (B, F, C, T)
-        for i, p in enumerate(self.mask.parameters()):
-            if p.device.index==0:
-                print("mask parameters", i, "nantest", torch.isnan(p).any(),torch.isnan(p).all())
-            if i > 10:
-                break
+        # for i, p in enumerate(self.mask.parameters()):
+        #     if p.device.index==0:
+        #         print("mask parameters", i, "nantest", torch.isnan(p).any(),torch.isnan(p).all())
+        #     if i > 10:
+        #         break
         
         masks, _ = self.mask(data, ilens)
-        if masks[0].device.index==0:
-            print("masks nan test speech (r any all i any all)", torch.isnan(masks[0]).any(),torch.isnan(masks[0]).all(), torch.isnan(masks[1]).any(), torch.isnan(masks[1]).all())
-            for i in range(2):
-                if torch.isnan(masks[i]).any():
-                    print("masks wrong",i,":", masks[i])
+        # if masks[0].device.index==0:
+        #     print("masks nan test speech (r any all i any all)", torch.isnan(masks[0]).any(),torch.isnan(masks[0]).all(), torch.isnan(masks[1]).any(), torch.isnan(masks[1]).all())
+        #     for i in range(2):
+        #         if torch.isnan(masks[i]).any():
+        #             print("masks wrong",i,":", masks[i])
         assert self.nmask == len(masks)
 
         if self.nmask == 2:  # (mask_speech, mask_noise)
@@ -227,15 +235,15 @@ class DNN_Beamformer_V2(torch.nn.Module):
             psd_speech = get_power_spectral_density_matrix(data, mask_speech)
             psd_noise = get_power_spectral_density_matrix(data, mask_noise)
            
-            if psd_speech.real.device.index==0:
-                print("psd_speech nan test:(r i)", torch.isnan(psd_speech.real).any(), torch.isnan(psd_speech.imag).any())
-                print("psd_noise nan test:(r i)", torch.isnan(psd_noise.real).any(), torch.isnan(psd_noise.imag).any())
+            # if psd_speech.real.device.index==0:
+            #     print("psd_speech nan test:(r i)", torch.isnan(psd_speech.real).any(), torch.isnan(psd_speech.imag).any())
+            #     print("psd_noise nan test:(r i)", torch.isnan(psd_noise.real).any(), torch.isnan(psd_noise.imag).any())
 
             enhanced, ws = apply_beamforming(data, ilens, psd_speech, psd_noise)
-            if enhanced.device.index==0:
-                print("enhaced nan test(before mono mask):", torch.isnan(enhanced.real).any(), torch.isnan(enhanced.imag).any())
-                if torch.tensor([torch.isnan(enhanced.real).any(), torch.isnan(enhanced.imag).any()]).any():
-                    print("enhaced nan test(before mono mask) WRONG:", enhanced)
+            # if enhanced.device.index==0:
+            #     print("enhaced nan test(before mono mask):", torch.isnan(enhanced.real).any(), torch.isnan(enhanced.imag).any())
+            #     if torch.tensor([torch.isnan(enhanced.real).any(), torch.isnan(enhanced.imag).any()]).any():
+            #         print("enhaced nan test(before mono mask) WRONG:", enhanced)
             # GUO
             # (B, F, T) -> (B, F, 1, T)
             mono_mask, _ = self.mask(enhanced.unsqueeze(-2), ilens)
@@ -246,16 +254,16 @@ class DNN_Beamformer_V2(torch.nn.Module):
             
             
             
-            if mono_mask[0].device.index==0:
-                print("mono mask nan test speech (r any all i any all)", torch.isnan(mono_mask[0]).any(),torch.isnan(mono_mask[0]).all(), torch.isnan(mono_mask[1]).any(), torch.isnan(mono_mask[1]).all())
-                for i in range(2):
-                    if torch.isnan(mono_mask[i]).any():
-                        print("mono_mask(speech, noise)",i,":", mono_mask[i]) 
+            # if mono_mask[0].device.index==0:
+            #     print("mono mask nan test speech (r any all i any all)", torch.isnan(mono_mask[0]).any(),torch.isnan(mono_mask[0]).all(), torch.isnan(mono_mask[1]).any(), torch.isnan(mono_mask[1]).all())
+            #     for i in range(2):
+            #         if torch.isnan(mono_mask[i]).any():
+            #             print("mono_mask(speech, noise)",i,":", mono_mask[i]) 
             enhanced = enhanced * mono_mask_speech.detach().squeeze(-2)
-            if enhanced.device.index==0:
-                print("enhaced nan test(after mono mask):", torch.isnan(enhanced.real).any(), torch.isnan(enhanced.imag).any())
-                if torch.tensor([torch.isnan(enhanced.real).any(), torch.isnan(enhanced.imag).any()]).any():
-                    print("enhaced nan test(after mono mask) WRONG:", enhanced)
+            # if enhanced.device.index==0:
+            #     print("enhaced nan test(after mono mask):", torch.isnan(enhanced.real).any(), torch.isnan(enhanced.imag).any())
+            #     if torch.tensor([torch.isnan(enhanced.real).any(), torch.isnan(enhanced.imag).any()]).any():
+            #         print("enhaced nan test(after mono mask) WRONG:", enhanced)
 
             # (..., F, T) -> (..., T, F)
             enhanced = enhanced.transpose(-1, -2)

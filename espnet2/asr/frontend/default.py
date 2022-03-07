@@ -15,6 +15,8 @@ from espnet2.layers.log_mel import LogMel
 from espnet2.layers.stft import Stft
 from espnet2.utils.get_default_kwargs import get_default_kwargs
 
+import logging
+
 
 class DefaultFrontend(AbsFrontend):
     """Conventional frontend structure for ASR.
@@ -62,7 +64,11 @@ class DefaultFrontend(AbsFrontend):
         self.apply_stft = apply_stft
 
         if frontend_conf is not None:
-            self.frontend = Frontend(idim=n_fft // 2 + 1, **frontend_conf)
+            if "args" in frontend_conf:
+                self.frontend = Frontend(idim=n_fft // 2 + 1, **frontend_conf)
+            else:
+                logging.info(f"No frontend is used in this framework")
+                self.frontend = None
         else:
             self.frontend = None
 
@@ -88,11 +94,16 @@ class DefaultFrontend(AbsFrontend):
         else:
             input_stft = ComplexTensor(input[..., 0], input[..., 1])
             feats_lens = input_lengths
+        
+        mask = None
+
         # 2. [Option] Speech enhancement
         if self.frontend is not None:
             assert isinstance(input_stft, ComplexTensor), type(input_stft)
             # input_stft: (Batch, Length, [Channel], Freq)
-            input_stft, _, mask = self.frontend(input_stft, feats_lens)
+            input_stft, feats_lens, mask = self.frontend(input_stft, feats_lens)
+            # input_stft, _, mask = self.frontend(input_stft, feats_lens) # GUO
+           
 
         # 3. [Multi channel case]: Select a channel
         if input_stft.dim() == 4:
@@ -112,7 +123,14 @@ class DefaultFrontend(AbsFrontend):
         # 5. Feature transform e.g. Stft -> Log-Mel-Fbank
         # input_power: (Batch, [Channel,] Length, Freq)
         #       -> input_feats: (Batch, Length, Dim)
-        input_feats, _ = self.logmel(input_power, feats_lens)
+        try:
+            input_feats, _ = self.logmel(input_power, feats_lens)
+        except Exception as e:
+            print(input.shape)
+            raise e
+
+        if mask != None:
+            return input_feats, feats_lens, mask
 
         return input_feats, feats_lens
 

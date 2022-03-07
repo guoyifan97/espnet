@@ -1,0 +1,1 @@
+/workspace/espnet/espnet/egs2/TEMPLATE/asr1/scripts/utils/show_asr_result.sh

@@ -1,4 +1,5 @@
 from distutils.version import LooseVersion
+from re import X
 from typing import Tuple
 from typing import Union
 
@@ -41,7 +42,7 @@ class MaskEstimator(torch.nn.Module):
         self.nonlinear = nonlinear
 
     def forward(
-        self, xs: Union[torch.Tensor, ComplexTensor], ilens: torch.LongTensor
+        self, xs: Union[torch.Tensor, ComplexTensor], ilens: torch.LongTensor = None, zero_stats=None,
     ) -> Tuple[Tuple[torch.Tensor, ...], torch.LongTensor]:
         """Mask estimator forward function.
 
@@ -53,21 +54,29 @@ class MaskEstimator(torch.nn.Module):
             masks: A tuple of the masks. (B, F, C, T)
             ilens: (B,)
         """
-        assert xs.size(0) == ilens.size(0), (xs.size(0), ilens.size(0))
+        if not torch.onnx.is_in_onnx_export():
+            assert xs.size(0) == ilens.size(0), (xs.size(0), ilens.size(0))
         _, _, C, input_length = xs.size()
+        ilens = ilens.long()
+        
         # (B, F, C, T) -> (B, C, T, F)
         xs = xs.permute(0, 2, 3, 1)
 
         # Calculate amplitude: (B, C, T, F) -> (B, C, T, F)
         if is_complex(xs):
             xs = (xs.real ** 2 + xs.imag ** 2) ** 0.5
+
         # xs: (B, C, T, F) -> xs: (B * C, T, F)
         xs = xs.contiguous().view(-1, xs.size(-2), xs.size(-1))
         # ilens: (B,) -> ilens_: (B * C)
         ilens_ = ilens[:, None].expand(-1, C).contiguous().view(-1)
 
         # xs: (B * C, T, F) -> xs: (B * C, T, D)
-        xs, _, _ = self.brnn(xs, ilens_)
+        if zero_stats is not None:
+            xs, _, _ = self.brnn(xs, ilens_, zero_stats)
+        else:
+            xs, _, _ = self.brnn(xs, ilens_)
+
         # xs: (B * C, T, D) -> xs: (B, C, T, D)
         xs = xs.view(-1, C, xs.size(-2), xs.size(-1))
 
@@ -85,14 +94,17 @@ class MaskEstimator(torch.nn.Module):
             elif self.nonlinear == "crelu":
                 mask = torch.clamp(mask, min=0, max=1)
             # Zero padding
-            mask.masked_fill(make_pad_mask(ilens, mask, length_dim=2), 0)
+            if not torch.onnx.is_in_onnx_export():
+                mask.masked_fill(make_pad_mask(ilens, mask, length_dim=2), 0)
 
             # (B, C, T, F) -> (B, F, C, T)
             mask = mask.permute(0, 3, 1, 2)
 
             # Take cares of multi gpu cases: If input_length > max(ilens)
-            if mask.size(-1) < input_length:
+            if not torch.onnx.is_in_onnx_export() and mask.size(-1) < input_length:
                 mask = F.pad(mask, [0, input_length - mask.size(-1)], value=0)
             masks.append(mask)
 
+        if torch.onnx.is_in_onnx_export():
+            return masks[0], masks[1]
         return tuple(masks), ilens

@@ -29,12 +29,23 @@ class ConvEncoder(AbsEncoder):
         """Forward.
 
         Args:
-            input (torch.Tensor): mixed speech [Batch, sample]
+            input (torch.Tensor): mixed speech [Batch, sample] 
             ilens (torch.Tensor): input lengths [Batch]
         Returns:
             feature (torch.Tensor): mixed feature after encoder [Batch, flens, channel]
         """
-        assert input.dim() == 2, "Currently only support single channle input"
+
+        # GUO
+        # assert input.dim() == 2, "Currently only support single channle input"
+
+        if input.dim() == 3:
+            channel_flag = True
+            B, T, C = input.shape
+            # B T C -> B*C T
+            input = input.transpose(2, 1).contiguous().view(B*C, -1)
+        else:
+            assert input.dim() == 2, "Currently only support single channle input"
+            channel_flag = False
 
         input = torch.unsqueeze(input, 1)
 
@@ -43,5 +54,9 @@ class ConvEncoder(AbsEncoder):
         feature = feature.transpose(1, 2)
 
         flens = (ilens - self.kernel_size) // self.stride + 1
+
+        if channel_flag:
+            # B*C T N -> B C T N -> B T N C
+            feature = feature.contiguous().view(B, C, -1, self._output_dim).permute(0, 2, 3, 1)
 
         return feature, flens

@@ -1,5 +1,6 @@
 import argparse
 import logging
+from sys import argv
 from typing import Callable
 from typing import Collection
 from typing import Dict
@@ -9,9 +10,10 @@ from typing import Tuple
 
 import numpy as np
 import torch
+from torch.autograd import backward
 from typeguard import check_argument_types
 from typeguard import check_return_type
-
+import itertools
 from espnet2.asr.ctc import CTC
 from espnet2.asr.decoder.abs_decoder import AbsDecoder
 from espnet2.asr.decoder.rnn_decoder import RNNDecoder
@@ -59,7 +61,7 @@ from espnet2.text.phoneme_tokenizer import g2p_choices
 from espnet2.torch_utils.initialize import initialize
 from espnet2.train.class_choices import ClassChoices
 from espnet2.train.collate_fn import CommonCollateFn
-from espnet2.train.preprocessor import CommonPreprocessor
+from espnet2.train.preprocessor import CommonPreprocessor, CommonPreprocessorMultiSpkrASR
 from espnet2.train.trainer import Trainer
 from espnet2.utils.get_default_kwargs import get_default_kwargs
 from espnet2.utils.nested_dict_action import NestedDictAction
@@ -143,10 +145,60 @@ decoder_choices = ClassChoices(
     default="rnn",
 )
 
+from espnet2.optimizers.sgd import SGD
+optim_classes = dict(
+    adam=torch.optim.Adam,
+    adamw=torch.optim.AdamW,
+    sgd=SGD,
+    adadelta=torch.optim.Adadelta,
+    adagrad=torch.optim.Adagrad,
+    adamax=torch.optim.Adamax,
+    asgd=torch.optim.ASGD,
+    lbfgs=torch.optim.LBFGS,
+    rmsprop=torch.optim.RMSprop,
+    rprop=torch.optim.Rprop,
+)
+try:
+    import torch_optimizer
+
+    optim_classes.update(
+        accagd=torch_optimizer.AccSGD,
+        adabound=torch_optimizer.AdaBound,
+        adamod=torch_optimizer.AdaMod,
+        diffgrad=torch_optimizer.DiffGrad,
+        lamb=torch_optimizer.Lamb,
+        novograd=torch_optimizer.NovoGrad,
+        pid=torch_optimizer.PID,
+        # torch_optimizer<=0.0.1a10 doesn't support
+        # qhadam=torch_optimizer.QHAdam,
+        qhm=torch_optimizer.QHM,
+        radam=torch_optimizer.RAdam,
+        sgdw=torch_optimizer.SGDW,
+        yogi=torch_optimizer.Yogi,
+    )
+    del torch_optimizer
+except ImportError:
+    pass
+try:
+    import apex
+
+    optim_classes.update(
+        fusedadam=apex.optimizers.FusedAdam,
+        fusedlamb=apex.optimizers.FusedLAMB,
+        fusednovograd=apex.optimizers.FusedNovoGrad,
+        fusedsgd=apex.optimizers.FusedSGD,
+    )
+    del apex
+except ImportError:
+    pass
+try:
+    import fairscale
+except ImportError:
+    fairscale = None
 
 class ASRTask(AbsTask):
     # If you need more than one optimizers, change this value
-    num_optimizers: int = 1
+    num_optimizers: int = 2
 
     # Add variable objects configurations
     class_choices_list = [
@@ -225,6 +277,12 @@ class ASRTask(AbsTask):
             type=str2bool,
             default=True,
             help="Apply preprocessing to data or not",
+        )
+        group.add_argument(
+            "--use_preprocessor_multi_spkr",
+            type=str2bool,
+            default=False,
+            help="whether use multi speaker preprocessor",
         )
         group.add_argument(
             "--token_type",
@@ -317,30 +375,56 @@ class ASRTask(AbsTask):
     ) -> Optional[Callable[[str, Dict[str, np.array]], Dict[str, np.ndarray]]]:
         assert check_argument_types()
         if args.use_preprocessor:
-            retval = CommonPreprocessor(
-                train=train,
-                token_type=args.token_type,
-                token_list=args.token_list,
-                bpemodel=args.bpemodel,
-                non_linguistic_symbols=args.non_linguistic_symbols,
-                text_cleaner=args.cleaner,
-                g2p_type=args.g2p,
-                # NOTE(kamo): Check attribute existence for backward compatibility
-                rir_scp=args.rir_scp if hasattr(args, "rir_scp") else None,
-                rir_apply_prob=args.rir_apply_prob
-                if hasattr(args, "rir_apply_prob")
-                else 1.0,
-                noise_scp=args.noise_scp if hasattr(args, "noise_scp") else None,
-                noise_apply_prob=args.noise_apply_prob
-                if hasattr(args, "noise_apply_prob")
-                else 1.0,
-                noise_db_range=args.noise_db_range
-                if hasattr(args, "noise_db_range")
-                else "13_15",
-                speech_volume_normalize=args.speech_volume_normalize
-                if hasattr(args, "rir_scp")
-                else None,
-            )
+            if not getattr(args, "use_preprocessor_multi_spkr", False):
+                retval = CommonPreprocessor(
+                    train=train,
+                    token_type=args.token_type,
+                    token_list=args.token_list,
+                    bpemodel=args.bpemodel,
+                    non_linguistic_symbols=args.non_linguistic_symbols,
+                    text_cleaner=args.cleaner,
+                    g2p_type=args.g2p,
+                    # NOTE(kamo): Check attribute existence for backward compatibility
+                    rir_scp=args.rir_scp if hasattr(args, "rir_scp") else None,
+                    rir_apply_prob=args.rir_apply_prob
+                    if hasattr(args, "rir_apply_prob")
+                    else 1.0,
+                    noise_scp=args.noise_scp if hasattr(args, "noise_scp") else None,
+                    noise_apply_prob=args.noise_apply_prob
+                    if hasattr(args, "noise_apply_prob")
+                    else 1.0,
+                    noise_db_range=args.noise_db_range
+                    if hasattr(args, "noise_db_range")
+                    else "13_15",
+                    speech_volume_normalize=args.speech_volume_normalize
+                    if hasattr(args, "rir_scp")
+                    else None,
+                )
+            else:
+                retval = CommonPreprocessorMultiSpkrASR(
+                    train=train,
+                    token_type=args.token_type,
+                    token_list=args.token_list,
+                    bpemodel=args.bpemodel,
+                    non_linguistic_symbols=args.non_linguistic_symbols,
+                    text_cleaner=args.cleaner,
+                    g2p_type=args.g2p,
+                    # NOTE(kamo): Check attribute existence for backward compatibility
+                    rir_scp=args.rir_scp if hasattr(args, "rir_scp") else None,
+                    rir_apply_prob=args.rir_apply_prob
+                    if hasattr(args, "rir_apply_prob")
+                    else 1.0,
+                    noise_scp=args.noise_scp if hasattr(args, "noise_scp") else None,
+                    noise_apply_prob=args.noise_apply_prob
+                    if hasattr(args, "noise_apply_prob")
+                    else 1.0,
+                    noise_db_range=args.noise_db_range
+                    if hasattr(args, "noise_db_range")
+                    else "13_15",
+                    speech_volume_normalize=args.speech_volume_normalize
+                    if hasattr(args, "rir_scp")
+                    else None,
+                )
         else:
             retval = None
         assert check_return_type(retval)
@@ -474,3 +558,91 @@ class ASRTask(AbsTask):
 
         assert check_return_type(model)
         return model
+    
+    @classmethod
+    def build_optimizers(
+        cls,
+        args: argparse.Namespace,
+        model: ESPnetASRModel,
+    ) -> List[torch.optim.Optimizer]:
+
+        # define generator optimizer
+        optim_backend_class = optim_classes.get(args.optim)
+        if optim_backend_class is None:
+            raise ValueError(f"must be one of {list(optim_classes)}: {args.optim}")
+
+        if "frontend_conf" in args.frontend_conf and "use_beamformer" in args.frontend_conf["frontend_conf"] and args.frontend_conf["frontend_conf"]["use_beamformer"] == True:
+            logging.info(f"We use two optimizer for frontend and backend individually")
+            backend_parameters_list = []
+
+            if model.specaug != None:
+                backend_parameters_list.append(model.specaug.parameters())
+            
+            if model.normalize != None:
+                backend_parameters_list.append(model.normalize.parameters())
+            
+            if model.preencoder != None:
+                backend_parameters_list.append(model.preencoder.parameters())
+            
+            if model.postencoder != None:
+                backend_parameters_list.append(model.postencoder.parameters())
+            
+            if model.encoder != None:
+                backend_parameters_list.append(model.encoder.parameters())
+            
+            if model.decoder != None:
+                backend_parameters_list.append(model.decoder.parameters())
+            
+            if model.criterion_att != None:
+                backend_parameters_list.append(model.criterion_att.parameters())
+            
+            if model.ctc != None:
+                backend_parameters_list.append(model.ctc.parameters())
+            
+            backend_parameters = itertools.chain(*backend_parameters_list)
+            frontend_parameters = model.frontend.parameters()
+        else:
+            backend_parameters = model.parameters()
+            frontend_parameters = None
+        
+        if args.sharded_ddp:
+            try:
+                import fairscale
+            except ImportError:
+                raise RuntimeError("Requiring fairscale. Do 'pip install fairscale'")
+            optim_backend = fairscale.optim.oss.OSS(
+                params=backend_parameters,
+                optim=optim_backend_class,
+                **args.optim_conf,
+            )
+        else:
+            optim_backend = optim_backend_class(
+                backend_parameters,
+                **args.optim_conf,
+            )
+
+        optimizers = [optim_backend]
+
+        if frontend_parameters != None:
+            optim_frontend_class = optim_classes.get(args.optim2)
+            if optim_frontend_class is None:
+                raise ValueError(f"must be one of {list(optim_classes)}: {args.optim2}")
+            if args.sharded_ddp:
+                try:
+                    import fairscale
+                except ImportError:
+                    raise RuntimeError("Requiring fairscale. Do 'pip install fairscale'")
+                optim_frontend = fairscale.optim.oss.OSS(
+                    params=frontend_parameters,
+                    optim=optim_frontend_class,
+                    **args.optim2_conf,
+                )
+            else:
+                optim_frontend = optim_frontend_class(
+                    frontend_parameters,
+                    **args.optim2_conf,
+                )
+
+            optimizers.append(optim_frontend) 
+
+        return optimizers

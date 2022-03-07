@@ -202,6 +202,10 @@ def get_parser():
         default=True,
         help="Normalize final hypotheses' score by length",
     )
+    # channel-pick
+    parser.add_argument("--random-pick-channel", type=int, default=0, help="randomly pick some channel to the frontend. \
+        0 means disabled, -1 means randomly select a random number(larger than 1) of channels , otherwise pick given number channels")
+    
     parser.add_argument(
         "--softmax-temperature",
         type=float,

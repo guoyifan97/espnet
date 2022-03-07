@@ -771,6 +771,7 @@ class Trainer:
                     if att_w.ndim == 2:
                         att_w = att_w[None]
                     elif att_w.ndim > 3 or att_w.ndim == 1:
+                        continue
                         raise RuntimeError(f"Must be 2 or 3 dimension: {att_w.ndim}")
 
                     w, h = plt.figaspect(1.0 / len(att_w))
